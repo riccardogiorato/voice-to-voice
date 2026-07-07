@@ -13,6 +13,8 @@ npm install
 npm run dev
 ```
 
+`npm run dev` is useful for UI work, but full voice mode needs a runtime that supports WebSocket upgrades. For the working voice demo, deploy to Vercel.
+
 Create `.env` with:
 
 ```bash
@@ -32,7 +34,18 @@ TOGETHER_TTS_VOICE=af_heart
 
 ## Deploy
 
-Deploy to Vercel and set `TOGETHER_API_KEY` in the project environment.
+Deploy to Vercel and set `TOGETHER_API_KEY` in the project environment:
+
+```bash
+vercel env add TOGETHER_API_KEY
+vercel deploy
+```
+
+For a production URL:
+
+```bash
+vercel deploy --prod
+```
 
 This uses Vercel's `experimental_upgradeWebSocket()` API for Next.js App Router. WebSockets require Fluid Compute and are governed by Vercel Function max duration, so the route exports `maxDuration = 300`.
 
