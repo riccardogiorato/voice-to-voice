@@ -64,6 +64,7 @@ export default function Home() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const workletRef = useRef<AudioWorkletNode | null>(null);
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextPlayTimeRef = useRef(0);
@@ -115,9 +116,18 @@ export default function Home() {
       const socket = new WebSocket(getVoiceSocketUrl());
       socketRef.current = socket;
 
-      socket.onopen = () => {
+      socket.onopen = async () => {
         socket.send(JSON.stringify({ type: "conversation.start" }));
-        wireMicrophone(audioContext, stream, socket);
+        try {
+          await wireMicrophone(audioContext, stream, socket);
+        } catch (reason) {
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Could not start microphone streaming.",
+          );
+          stopConversation();
+        }
       };
 
       socket.onmessage = (message) => {
@@ -190,12 +200,36 @@ export default function Home() {
     }
   }
 
-  function wireMicrophone(
+  async function wireMicrophone(
     audioContext: AudioContext,
     stream: MediaStream,
     socket: WebSocket,
   ) {
     const source = audioContext.createMediaStreamSource(stream);
+
+    if (audioContext.audioWorklet) {
+      await audioContext.audioWorklet.addModule(createMicWorkletUrl());
+      const worklet = new AudioWorkletNode(audioContext, "mic-capture");
+
+      worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        if (phaseRef.current === "speaking") return;
+
+        socket.send(
+          JSON.stringify({
+            type: "audio.input",
+            audio: float32ToBase64(event.data),
+            sampleRate: audioContext.sampleRate,
+          }),
+        );
+      };
+
+      source.connect(worklet);
+      inputSourceRef.current = source;
+      workletRef.current = worklet;
+      return;
+    }
+
     const processor = audioContext.createScriptProcessor(2048, 1, 1);
 
     processor.onaudioprocess = (event) => {
@@ -237,12 +271,15 @@ export default function Home() {
 
   function tearDownAudio() {
     clearPlayback();
+    workletRef.current?.disconnect();
+    workletRef.current?.port.close();
     processorRef.current?.disconnect();
     inputSourceRef.current?.disconnect();
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     void audioContextRef.current?.close();
 
     processorRef.current = null;
+    workletRef.current = null;
     inputSourceRef.current = null;
     mediaStreamRef.current = null;
     audioContextRef.current = null;
@@ -463,6 +500,25 @@ export default function Home() {
 function getVoiceSocketUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/api/voice`;
+}
+
+function createMicWorkletUrl() {
+  const source = `
+    class MicCaptureProcessor extends AudioWorkletProcessor {
+      process(inputs) {
+        const input = inputs[0] && inputs[0][0];
+        if (input && input.length) {
+          const copy = new Float32Array(input);
+          this.port.postMessage(copy, [copy.buffer]);
+        }
+        return true;
+      }
+    }
+
+    registerProcessor("mic-capture", MicCaptureProcessor);
+  `;
+
+  return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
 }
 
 function float32ToBase64(input: Float32Array) {

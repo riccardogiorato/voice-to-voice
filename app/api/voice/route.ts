@@ -4,10 +4,10 @@ import WebSocket from "ws";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const STT_MODEL = process.env.TOGETHER_STT_MODEL ?? "openai/whisper-large-v3";
-const CHAT_MODEL = process.env.TOGETHER_CHAT_MODEL ?? "Qwen/Qwen3.5-9B";
-const TTS_MODEL = process.env.TOGETHER_TTS_MODEL ?? "hexgrad/Kokoro-82M";
-const TTS_VOICE = process.env.TOGETHER_TTS_VOICE ?? "af_heart";
+const STT_MODEL = envOrDefault("TOGETHER_STT_MODEL", "openai/whisper-large-v3");
+const CHAT_MODEL = envOrDefault("TOGETHER_CHAT_MODEL", "Qwen/Qwen3.5-9B");
+const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "hexgrad/Kokoro-82M");
+const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "af_heart");
 
 type ClientEvent =
   | { type: "conversation.start" }
@@ -232,7 +232,16 @@ class VoiceSession {
       });
 
       if (!response.ok || !response.body) {
-        throw new Error(`Together chat failed with ${response.status}`);
+        const errorBody = await response.text().catch(() => "");
+        const message = compactErrorBody(errorBody);
+        console.error("Together chat failed", {
+          status: response.status,
+          model: CHAT_MODEL,
+          body: message,
+        });
+        throw new Error(
+          `Together chat failed with ${response.status}${message ? `: ${message}` : ""}`,
+        );
       }
 
       this.send("state", { state: "speaking" });
@@ -332,6 +341,28 @@ class VoiceSession {
     this.stt?.close();
     this.tts?.close();
     if (this.client.readyState === WebSocket.OPEN) this.client.close();
+  }
+}
+
+function envOrDefault(name: string, fallback: string) {
+  const value = process.env[name]?.trim();
+  return value && value.length > 0 ? value : fallback;
+}
+
+function compactErrorBody(body: string) {
+  if (!body.trim()) return "";
+
+  try {
+    const json = JSON.parse(body);
+    const message =
+      json.error?.message ??
+      json.message ??
+      json.error ??
+      json.detail ??
+      JSON.stringify(json);
+    return String(message).slice(0, 500);
+  } catch {
+    return body.replace(/\s+/g, " ").trim().slice(0, 500);
   }
 }
 
