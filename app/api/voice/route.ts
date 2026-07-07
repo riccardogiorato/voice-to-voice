@@ -16,6 +16,7 @@ type ClientEvent =
   | { type: "conversation.start" }
   | { type: "conversation.stop" }
   | { type: "response.cancel" }
+  | { type: "audio.commit" }
   | { type: "audio.input"; audio: string; sampleRate: number };
 
 type ChatMessage = {
@@ -69,7 +70,7 @@ class VoiceSession {
     url.searchParams.set("intent", "transcription");
     url.searchParams.set("model", STT_MODEL);
     url.searchParams.set("input_audio_format", "pcm_s16le_16000");
-    url.searchParams.set("min_silence_duration_ms", "650");
+    url.searchParams.set("turn_detection", "none");
     url.searchParams.set("max_speech_duration_s", "8");
 
     this.stt = new WebSocket(url.toString(), {
@@ -118,6 +119,11 @@ class VoiceSession {
     if (event.type === "response.cancel") {
       this.cancelResponse();
       this.send("state", { state: "listening" });
+      return;
+    }
+
+    if (event.type === "audio.commit") {
+      this.commitAudio();
       return;
     }
 
@@ -193,6 +199,11 @@ class VoiceSession {
         ),
       }),
     );
+  }
+
+  private commitAudio() {
+    if (!this.stt || this.stt.readyState !== WebSocket.OPEN) return;
+    this.stt.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
   }
 
   private async answer(transcript: string) {

@@ -9,6 +9,7 @@ import {
   X,
 } from "lucide-react";
 import Image from "next/image";
+import type { MutableRefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
@@ -16,6 +17,10 @@ type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 type Turn = {
   role: "user" | "assistant";
   text: string;
+};
+
+type TranscriptItem = Turn & {
+  live?: boolean;
 };
 
 type ServerEvent =
@@ -52,7 +57,7 @@ const phaseCopy: Record<Phase, { label: string; detail: string }> = {
 };
 
 const SPEECH_RMS_THRESHOLD = 0.018;
-const SPEECH_HOLD_MS = 420;
+const SPEECH_HOLD_MS = 360;
 const MIN_AUDIO_CHUNK_MS = 80;
 
 export default function Home() {
@@ -75,7 +80,9 @@ export default function Home() {
   const phaseRef = useRef<Phase>("idle");
   const micBufferRef = useRef<Float32Array[]>([]);
   const micBufferSamplesRef = useRef(0);
-  const lastSpeechAtRef = useRef(0);
+  const lastSpeechAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const speechOpenRef = useRef(false);
+  const pcmLeftoverRef = useRef<Uint8Array | null>(null);
 
   const isActive = phase !== "idle";
   const status = phaseCopy[phase];
@@ -279,7 +286,9 @@ export default function Home() {
     nextPlayTimeRef.current = 0;
     micBufferRef.current = [];
     micBufferSamplesRef.current = 0;
-    lastSpeechAtRef.current = 0;
+    lastSpeechAtRef.current = Number.NEGATIVE_INFINITY;
+    speechOpenRef.current = false;
+    pcmLeftoverRef.current = null;
   }
 
   function sendSpeechAudio(
@@ -293,10 +302,16 @@ export default function Home() {
     const now = performance.now();
     if (rms(input) >= SPEECH_RMS_THRESHOLD) {
       lastSpeechAtRef.current = now;
+      speechOpenRef.current = true;
     }
 
     const inSpeechTail = now - lastSpeechAtRef.current <= SPEECH_HOLD_MS;
     if (!inSpeechTail) {
+      flushSpeechAudio(socket, sampleRate);
+      if (speechOpenRef.current) {
+        socket.send(JSON.stringify({ type: "audio.commit" }));
+        speechOpenRef.current = false;
+      }
       micBufferRef.current = [];
       micBufferSamplesRef.current = 0;
       return;
@@ -307,6 +322,12 @@ export default function Home() {
     micBufferSamplesRef.current += copy.length;
 
     if (micBufferSamplesRef.current < minChunkSamples) return;
+
+    flushSpeechAudio(socket, sampleRate);
+  }
+
+  function flushSpeechAudio(socket: WebSocket, sampleRate: number) {
+    if (micBufferSamplesRef.current === 0) return;
 
     const chunk = concatFloat32(micBufferRef.current, micBufferSamplesRef.current);
     micBufferRef.current = [];
@@ -331,13 +352,14 @@ export default function Home() {
     });
     playbackSourcesRef.current = [];
     nextPlayTimeRef.current = audioContextRef.current?.currentTime ?? 0;
+    pcmLeftoverRef.current = null;
   }
 
   function playPcm16(base64: string, sampleRate: number) {
     const audioContext = audioContextRef.current;
     if (!audioContext) return;
 
-    const samples = base64Pcm16ToFloat32(base64);
+    const samples = base64Pcm16ToFloat32(base64, pcmLeftoverRef);
     const buffer = audioContext.createBuffer(1, samples.length, sampleRate);
     buffer.copyToChannel(samples, 0);
 
@@ -357,16 +379,16 @@ export default function Home() {
     };
   }
 
-  const transcriptItems = useMemo(
-    () => [
-      ...turns.slice(-4),
-      ...(partial ? [{ role: "user" as const, text: partial }] : []),
+  const transcriptItems = useMemo<TranscriptItem[]>(() => {
+    const liveItems: TranscriptItem[] = [
+      ...(partial ? [{ role: "user" as const, text: partial, live: true }] : []),
       ...(assistantDraft
-        ? [{ role: "assistant" as const, text: assistantDraft }]
+        ? [{ role: "assistant" as const, text: assistantDraft, live: true }]
         : []),
-    ],
-    [assistantDraft, partial, turns],
-  );
+    ];
+
+    return [...turns.slice(liveItems.length ? -2 : -3), ...liveItems].slice(-4);
+  }, [assistantDraft, partial, turns]);
 
   return (
     <main className="min-h-dvh overflow-hidden bg-[#faf9f6] text-[#050505]">
@@ -454,30 +476,39 @@ export default function Home() {
             </div>
 
             <div className="space-y-4">
-              <div className="h-[136px] overflow-hidden rounded-[26px] bg-white p-4 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_10px_26px_rgba(5,5,5,0.06)]">
+              <div className="h-[136px] overflow-hidden rounded-[26px] bg-white p-3 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_10px_26px_rgba(5,5,5,0.06)]">
                 <div className="flex items-center gap-2 text-xs font-medium text-[#6b5a82]">
                   <MessageCircle className="size-4" aria-hidden />
-                  Live transcript
+                  Conversation
                 </div>
-                <div className="mt-3 space-y-2">
+                <div className="relative mt-2 h-[88px] overflow-hidden">
+                  <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b from-white to-transparent" />
+                  <div className="flex h-full flex-col justify-end gap-1.5 pt-5">
                   {transcriptItems.length === 0 ? (
-                    <p className="text-pretty text-sm leading-6 text-[#050505]/50">
+                    <p className="text-pretty px-1 text-sm leading-6 text-[#050505]/50">
                       Short turns work best: ask one thing, pause, and let the
                       assistant answer.
                     </p>
                   ) : (
                     transcriptItems.map((turn, index) => (
                       <p
-                        className="line-clamp-2 text-pretty text-sm leading-6 text-[#050505]/70"
+                        className={`line-clamp-2 max-w-[84%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 transition-[opacity,transform] duration-200 ${
+                          turn.role === "user"
+                            ? "self-end bg-[#050505] text-white"
+                            : "self-start bg-[#f3eef8] text-[#33253d]"
+                        } ${turn.live ? "opacity-100" : ""}`}
+                        style={{
+                          opacity: turn.live
+                            ? 1
+                            : Math.max(0.34, 1 - (transcriptItems.length - index - 1) * 0.24),
+                        }}
                         key={`${turn.role}-${index}-${turn.text}`}
                       >
-                        <span className="font-semibold text-[#050505]">
-                          {turn.role === "user" ? "You" : "AI"}:
-                        </span>{" "}
                         {turn.text}
                       </p>
                     ))
                   )}
+                  </div>
                 </div>
               </div>
 
@@ -569,8 +600,22 @@ function concatFloat32(chunks: Float32Array[], totalLength: number) {
   return output;
 }
 
-function base64Pcm16ToFloat32(base64: string) {
-  const bytes = base64ToBytes(base64);
+function base64Pcm16ToFloat32(
+  base64: string,
+  leftoverRef: MutableRefObject<Uint8Array | null>,
+) {
+  let bytes = base64ToBytes(base64);
+
+  if (leftoverRef.current) {
+    bytes = concatBytes(leftoverRef.current, bytes);
+    leftoverRef.current = null;
+  }
+
+  if (bytes.byteLength % 2 === 1) {
+    leftoverRef.current = bytes.subarray(bytes.byteLength - 1);
+    bytes = bytes.subarray(0, bytes.byteLength - 1);
+  }
+
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const samples = new Float32Array(Math.floor(bytes.byteLength / 2));
 
@@ -579,6 +624,13 @@ function base64Pcm16ToFloat32(base64: string) {
   }
 
   return samples;
+}
+
+function concatBytes(left: Uint8Array, right: Uint8Array) {
+  const output = new Uint8Array(left.byteLength + right.byteLength);
+  output.set(left, 0);
+  output.set(right, left.byteLength);
+  return output;
 }
 
 function bytesToBase64(bytes: Uint8Array) {
