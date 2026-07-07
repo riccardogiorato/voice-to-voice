@@ -3,7 +3,6 @@
 import {
   Cpu,
   LoaderCircle,
-  MessageCircle,
   Mic,
   SlidersHorizontal,
   X,
@@ -36,23 +35,23 @@ type ServerEvent =
 const phaseCopy: Record<Phase, { label: string; detail: string }> = {
   idle: {
     label: "Tap to talk",
-    detail: "Ask out loud.",
+    detail: "Ready",
   },
   connecting: {
     label: "Connecting",
-    detail: "Opening voice.",
+    detail: "Opening",
   },
   listening: {
     label: "Listening",
-    detail: "Go ahead.",
+    detail: "Live",
   },
   thinking: {
     label: "Thinking",
-    detail: "Finding the words.",
+    detail: "Working",
   },
   speaking: {
     label: "Speaking",
-    detail: "Answering now.",
+    detail: "Mic paused",
   },
 };
 
@@ -86,10 +85,11 @@ export default function Home() {
 
   const isActive = phase !== "idle";
   const status = phaseCopy[phase];
-  const visibleAssistant =
-    assistantDraft ||
-    [...turns].reverse().find((turn) => turn.role === "assistant")?.text ||
-    "";
+
+  function updatePhase(nextPhase: Phase) {
+    phaseRef.current = nextPhase;
+    setPhase(nextPhase);
+  }
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -108,7 +108,7 @@ export default function Home() {
     setError("");
     setPartial("");
     setAssistantDraft("");
-    setPhase("connecting");
+    updatePhase("connecting");
 
     try {
       const audioContext = new AudioContext({ latencyHint: "interactive" });
@@ -148,23 +148,23 @@ export default function Home() {
 
       socket.onerror = () => {
         setError("Voice socket failed. Try a deployed Vercel URL if local dev cannot upgrade WebSockets.");
-        setPhase("idle");
+        updatePhase("idle");
       };
 
       socket.onclose = () => {
         tearDownAudio();
-        setPhase("idle");
+        updatePhase("idle");
       };
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not start the microphone.");
-      setPhase("idle");
+      updatePhase("idle");
       tearDownAudio();
     }
   }
 
   function handleServerEvent(event: ServerEvent) {
     if (event.type === "state") {
-      setPhase(event.state);
+      updatePhase(event.state);
       return;
     }
 
@@ -208,7 +208,7 @@ export default function Home() {
 
     if (event.type === "error") {
       setError(event.message);
-      setPhase("listening");
+      updatePhase("listening");
     }
   }
 
@@ -262,7 +262,7 @@ export default function Home() {
     socketRef.current?.close();
     socketRef.current = null;
     tearDownAudio();
-    setPhase("idle");
+    updatePhase("idle");
     setPartial("");
     setAssistantDraft("");
   }
@@ -298,6 +298,10 @@ export default function Home() {
     socket: WebSocket,
   ) {
     if (socket.readyState !== WebSocket.OPEN) return;
+    if (phaseRef.current !== "listening") {
+      resetMicGate();
+      return;
+    }
 
     const now = performance.now();
     if (rms(input) >= SPEECH_RMS_THRESHOLD) {
@@ -324,6 +328,13 @@ export default function Home() {
     if (micBufferSamplesRef.current < minChunkSamples) return;
 
     flushSpeechAudio(socket, sampleRate);
+  }
+
+  function resetMicGate() {
+    micBufferRef.current = [];
+    micBufferSamplesRef.current = 0;
+    lastSpeechAtRef.current = Number.NEGATIVE_INFINITY;
+    speechOpenRef.current = false;
   }
 
   function flushSpeechAudio(socket: WebSocket, sampleRate: number) {
@@ -460,47 +471,43 @@ export default function Home() {
               </div>
             ) : null}
 
-            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8">
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-5 pb-6">
               <div className={`voice-orb voice-orb-${phase}`} aria-hidden>
                 <div className="voice-orb-core" />
               </div>
 
-              <div className="min-h-[116px] w-full text-center">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#6b5a82]">
-                  {status.label}
+              <div className="rounded-full bg-white/38 px-4 py-2 text-center shadow-[0_0_0_1px_rgba(255,255,255,0.55),0_10px_28px_rgba(90,43,103,0.08)] backdrop-blur-xl">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b5a82]">
+                  {status.label} · {status.detail}
                 </p>
-                <h1 className="mt-3 text-balance font-[family-name:var(--font-manrope)] text-[34px] font-medium leading-[1.02] tracking-normal text-[#050505]">
-                  {visibleAssistant || status.detail}
-                </h1>
               </div>
             </div>
 
             <div className="space-y-4">
-              <div className="h-[136px] overflow-hidden rounded-[26px] bg-white p-3 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_10px_26px_rgba(5,5,5,0.06)]">
-                <div className="flex items-center gap-2 text-xs font-medium text-[#6b5a82]">
-                  <MessageCircle className="size-4" aria-hidden />
-                  Conversation
-                </div>
-                <div className="relative mt-2 h-[88px] overflow-hidden">
-                  <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b from-white to-transparent" />
-                  <div className="flex h-full flex-col justify-end gap-1.5 pt-5">
+              <div className="conversation-stream">
+                <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-gradient-to-b from-[#fdfcf9]/80 to-transparent" />
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-gradient-to-t from-[#fdfcf9]/72 to-transparent" />
+                <div className="flex h-full flex-col justify-end gap-1.5 px-1 py-3">
                   {transcriptItems.length === 0 ? (
-                    <p className="text-pretty px-1 text-sm leading-6 text-[#050505]/50">
-                      Short turns work best: ask one thing, pause, and let the
-                      assistant answer.
+                    <p className="self-center rounded-full bg-white/34 px-3 py-1.5 text-sm leading-5 text-[#6b5a82]/72 shadow-[0_0_0_1px_rgba(255,255,255,0.56)] backdrop-blur-xl">
+                      Tap to start
                     </p>
                   ) : (
                     transcriptItems.map((turn, index) => (
                       <p
-                        className={`line-clamp-2 max-w-[84%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 transition-[opacity,transform] duration-200 ${
+                        className={`line-clamp-2 max-w-[86%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 shadow-[0_8px_22px_rgba(42,26,52,0.07)] transition-[opacity,filter,transform] duration-300 ease-out ${
                           turn.role === "user"
-                            ? "self-end bg-[#050505] text-white"
-                            : "self-start bg-[#f3eef8] text-[#33253d]"
+                            ? "self-end bg-[#050505]/88 text-white backdrop-blur-xl"
+                            : "self-start bg-white/48 text-[#33253d] shadow-[0_0_0_1px_rgba(255,255,255,0.5),0_8px_22px_rgba(42,26,52,0.06)] backdrop-blur-xl"
                         } ${turn.live ? "opacity-100" : ""}`}
                         style={{
                           opacity: turn.live
                             ? 1
-                            : Math.max(0.34, 1 - (transcriptItems.length - index - 1) * 0.24),
+                            : Math.max(0.2, 0.82 - (transcriptItems.length - index - 1) * 0.22),
+                          filter: turn.live
+                            ? "blur(0)"
+                            : `blur(${Math.min(1.4, (transcriptItems.length - index - 1) * 0.35)}px)`,
+                          transform: `translateY(${turn.live ? 0 : Math.max(-10, (index - transcriptItems.length + 1) * 3)}px)`,
                         }}
                         key={`${turn.role}-${index}-${turn.text}`}
                       >
@@ -508,7 +515,6 @@ export default function Home() {
                       </p>
                     ))
                   )}
-                  </div>
                 </div>
               </div>
 
