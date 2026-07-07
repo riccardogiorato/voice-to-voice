@@ -5,7 +5,10 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const STT_MODEL = envOrDefault("TOGETHER_STT_MODEL", "openai/whisper-large-v3");
-const CHAT_MODEL = envOrDefault("TOGETHER_CHAT_MODEL", "Qwen/Qwen3.5-9B");
+const CHAT_MODEL = envOrDefault(
+  "TOGETHER_CHAT_MODEL",
+  "Qwen/Qwen2.5-7B-Instruct-Turbo",
+);
 const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "hexgrad/Kokoro-82M");
 const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "af_heart");
 
@@ -36,12 +39,12 @@ class VoiceSession {
   private tts?: WebSocket;
   private chatAbort?: AbortController;
   private messages: ChatMessage[] = [{ role: "system", content: systemPrompt }];
-  private generation = 0;
-  private ttsContext = "turn-0";
   private ttsReady = false;
   private pendingSpeech: string[] = [];
   private pendingCommit = false;
   private stopped = false;
+  private lastTranscript = "";
+  private lastTranscriptAt = 0;
 
   constructor(private client: WebSocket) {}
 
@@ -133,8 +136,10 @@ class VoiceSession {
     }
 
     if (message.type === "conversation.item.input_audio_transcription.completed") {
-      const transcript = String(message.transcript ?? "").trim();
+      const transcript = cleanTranscript(String(message.transcript ?? ""));
       if (transcript.length > 0) {
+        if (this.isDuplicateTranscript(transcript)) return;
+
         this.send("transcript.final", { text: transcript });
         void this.answer(transcript);
       }
@@ -158,14 +163,6 @@ class VoiceSession {
       return;
     }
 
-    if (
-      message.context_id &&
-      message.context_id !== this.ttsContext &&
-      message.type !== "context.cancelled"
-    ) {
-      return;
-    }
-
     if (message.type === "conversation.item.audio_output.delta") {
       this.send("audio.delta", { audio: message.delta, sampleRate: 24000 });
       return;
@@ -179,6 +176,7 @@ class VoiceSession {
 
     if (message.type === "conversation.item.tts.failed") {
       this.send("error", { message: message.error?.message ?? "TTS failed." });
+      this.send("state", { state: "listening" });
     }
   }
 
@@ -199,13 +197,13 @@ class VoiceSession {
 
   private async answer(transcript: string) {
     this.cancelResponse();
-    this.generation += 1;
-    this.ttsContext = `turn-${this.generation}`;
     this.send("audio.clear", {});
     this.send("state", { state: "thinking" });
 
-    this.messages.push({ role: "user", content: transcript });
-    this.messages = [this.messages[0], ...this.messages.slice(-8)];
+    const chatMessages: ChatMessage[] = [
+      this.messages[0],
+      { role: "user", content: transcript },
+    ];
 
     const controller = new AbortController();
     this.chatAbort = controller;
@@ -222,10 +220,9 @@ class VoiceSession {
         },
         body: JSON.stringify({
           model: CHAT_MODEL,
-          messages: this.messages,
+          messages: chatMessages,
           max_tokens: 120,
           temperature: 0.45,
-          reasoning: { enabled: false },
           stream: true,
         }),
         signal: controller.signal,
@@ -237,6 +234,8 @@ class VoiceSession {
         console.error("Together chat failed", {
           status: response.status,
           model: CHAT_MODEL,
+          messageCount: chatMessages.length,
+          lastUserLength: transcript.length,
           body: message,
         });
         throw new Error(
@@ -262,6 +261,7 @@ class VoiceSession {
 
       if (assistant.trim()) {
         this.messages.push({ role: "assistant", content: assistant.trim() });
+        this.messages = [this.messages[0], ...this.messages.slice(-6)];
       }
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -283,7 +283,6 @@ class VoiceSession {
       JSON.stringify({
         type: "input_text_buffer.append",
         text,
-        context_id: this.ttsContext,
       }),
     );
   }
@@ -297,7 +296,6 @@ class VoiceSession {
     this.tts.send(
       JSON.stringify({
         type: "input_text_buffer.commit",
-        context_id: this.ttsContext,
       }),
     );
   }
@@ -320,9 +318,6 @@ class VoiceSession {
     this.pendingCommit = false;
 
     if (this.tts && this.tts.readyState === WebSocket.OPEN) {
-      this.tts.send(
-        JSON.stringify({ type: "context.cancel", context_id: this.ttsContext }),
-      );
       this.tts.send(JSON.stringify({ type: "input_text_buffer.clear" }));
     }
 
@@ -332,6 +327,18 @@ class VoiceSession {
   private send(type: string, payload: Record<string, unknown>) {
     if (this.stopped || this.client.readyState !== WebSocket.OPEN) return;
     this.client.send(JSON.stringify({ type, ...payload }));
+  }
+
+  private isDuplicateTranscript(transcript: string) {
+    const normalized = normalizeTranscript(transcript);
+    const now = Date.now();
+    const duplicate =
+      normalized === this.lastTranscript && now - this.lastTranscriptAt < 3000;
+
+    this.lastTranscript = normalized;
+    this.lastTranscriptAt = now;
+
+    return duplicate;
   }
 
   private close() {
@@ -364,6 +371,31 @@ function compactErrorBody(body: string) {
   } catch {
     return body.replace(/\s+/g, " ").trim().slice(0, 500);
   }
+}
+
+function cleanTranscript(transcript: string) {
+  const words = transcript.replace(/\s+/g, " ").trim().split(" ");
+  const cleaned: string[] = [];
+  let previous = "";
+  let repeatCount = 0;
+
+  for (const word of words) {
+    const normalized = normalizeTranscript(word);
+    repeatCount = normalized && normalized === previous ? repeatCount + 1 : 1;
+    previous = normalized;
+
+    if (repeatCount <= 2) cleaned.push(word);
+  }
+
+  return cleaned.join(" ").slice(0, 800).trim();
+}
+
+function normalizeTranscript(transcript: string) {
+  return transcript
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function parseJson(data: WebSocket.RawData) {
@@ -431,7 +463,8 @@ async function* streamTogetherText(body: ReadableStream<Uint8Array>) {
 
       try {
         const json = JSON.parse(payload);
-        const delta = json.choices?.[0]?.delta?.content;
+        const delta =
+          json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.text;
         if (typeof delta === "string" && delta.length > 0) {
           yield delta;
         }

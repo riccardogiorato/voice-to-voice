@@ -6,7 +6,6 @@ import {
   MessageCircle,
   Mic,
   SlidersHorizontal,
-  Volume2,
   X,
 } from "lucide-react";
 import Image from "next/image";
@@ -52,6 +51,10 @@ const phaseCopy: Record<Phase, { label: string; detail: string }> = {
   },
 };
 
+const SPEECH_RMS_THRESHOLD = 0.018;
+const SPEECH_HOLD_MS = 420;
+const MIN_AUDIO_CHUNK_MS = 80;
+
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [partial, setPartial] = useState("");
@@ -66,9 +69,13 @@ export default function Home() {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const workletRef = useRef<AudioWorkletNode | null>(null);
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const silentGainRef = useRef<GainNode | null>(null);
   const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextPlayTimeRef = useRef(0);
   const phaseRef = useRef<Phase>("idle");
+  const micBufferRef = useRef<Float32Array[]>([]);
+  const micBufferSamplesRef = useRef(0);
+  const lastSpeechAtRef = useRef(0);
 
   const isActive = phase !== "idle";
   const status = phaseCopy[phase];
@@ -76,8 +83,6 @@ export default function Home() {
     assistantDraft ||
     [...turns].reverse().find((turn) => turn.role === "assistant")?.text ||
     "";
-  const visibleUser =
-    partial || [...turns].reverse().find((turn) => turn.role === "user")?.text || "";
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -157,7 +162,7 @@ export default function Home() {
     }
 
     if (event.type === "transcript.delta") {
-      setPartial((current) => current + event.text);
+      setPartial(event.text);
       return;
     }
 
@@ -210,53 +215,39 @@ export default function Home() {
     if (audioContext.audioWorklet) {
       await audioContext.audioWorklet.addModule(createMicWorkletUrl());
       const worklet = new AudioWorkletNode(audioContext, "mic-capture");
+      const silentGain = audioContext.createGain();
+      silentGain.gain.value = 0;
+      const minChunkSamples = Math.round(
+        audioContext.sampleRate * (MIN_AUDIO_CHUNK_MS / 1000),
+      );
 
       worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
-        if (socket.readyState !== WebSocket.OPEN) return;
-        if (phaseRef.current === "speaking") return;
-
-        socket.send(
-          JSON.stringify({
-            type: "audio.input",
-            audio: float32ToBase64(event.data),
-            sampleRate: audioContext.sampleRate,
-          }),
-        );
+        sendSpeechAudio(event.data, audioContext.sampleRate, minChunkSamples, socket);
       };
 
       source.connect(worklet);
+      worklet.connect(silentGain);
+      silentGain.connect(audioContext.destination);
       inputSourceRef.current = source;
       workletRef.current = worklet;
+      silentGainRef.current = silentGain;
       return;
     }
 
     const processor = audioContext.createScriptProcessor(2048, 1, 1);
+    const minChunkSamples = Math.round(
+      audioContext.sampleRate * (MIN_AUDIO_CHUNK_MS / 1000),
+    );
 
     processor.onaudioprocess = (event) => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      if (phaseRef.current === "speaking") return;
-
       const input = event.inputBuffer.getChannelData(0);
-      socket.send(
-        JSON.stringify({
-          type: "audio.input",
-          audio: float32ToBase64(input),
-          sampleRate: audioContext.sampleRate,
-        }),
-      );
+      sendSpeechAudio(input, audioContext.sampleRate, minChunkSamples, socket);
     };
 
     source.connect(processor);
     processor.connect(audioContext.destination);
     inputSourceRef.current = source;
     processorRef.current = processor;
-  }
-
-  function cancelResponse() {
-    clearPlayback();
-    socketRef.current?.send(JSON.stringify({ type: "response.cancel" }));
-    setAssistantDraft("");
-    setPhase("listening");
   }
 
   function stopConversation() {
@@ -273,6 +264,7 @@ export default function Home() {
     clearPlayback();
     workletRef.current?.disconnect();
     workletRef.current?.port.close();
+    silentGainRef.current?.disconnect();
     processorRef.current?.disconnect();
     inputSourceRef.current?.disconnect();
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -280,10 +272,53 @@ export default function Home() {
 
     processorRef.current = null;
     workletRef.current = null;
+    silentGainRef.current = null;
     inputSourceRef.current = null;
     mediaStreamRef.current = null;
     audioContextRef.current = null;
     nextPlayTimeRef.current = 0;
+    micBufferRef.current = [];
+    micBufferSamplesRef.current = 0;
+    lastSpeechAtRef.current = 0;
+  }
+
+  function sendSpeechAudio(
+    input: Float32Array,
+    sampleRate: number,
+    minChunkSamples: number,
+    socket: WebSocket,
+  ) {
+    if (socket.readyState !== WebSocket.OPEN) return;
+
+    const now = performance.now();
+    if (rms(input) >= SPEECH_RMS_THRESHOLD) {
+      lastSpeechAtRef.current = now;
+    }
+
+    const inSpeechTail = now - lastSpeechAtRef.current <= SPEECH_HOLD_MS;
+    if (!inSpeechTail) {
+      micBufferRef.current = [];
+      micBufferSamplesRef.current = 0;
+      return;
+    }
+
+    const copy = new Float32Array(input);
+    micBufferRef.current.push(copy);
+    micBufferSamplesRef.current += copy.length;
+
+    if (micBufferSamplesRef.current < minChunkSamples) return;
+
+    const chunk = concatFloat32(micBufferRef.current, micBufferSamplesRef.current);
+    micBufferRef.current = [];
+    micBufferSamplesRef.current = 0;
+
+    socket.send(
+      JSON.stringify({
+        type: "audio.input",
+        audio: float32ToBase64(chunk),
+        sampleRate,
+      }),
+    );
   }
 
   function clearPlayback() {
@@ -393,7 +428,7 @@ export default function Home() {
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <dt className="text-[#050505]/52">Response</dt>
-                    <dd className="font-medium text-[#050505]">Qwen3.5 9B</dd>
+                    <dd className="font-medium text-[#050505]">Qwen2.5 7B</dd>
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <dt className="text-[#050505]/52">Voice</dt>
@@ -413,7 +448,7 @@ export default function Home() {
                   {status.label}
                 </p>
                 <h1 className="mt-3 text-balance font-[family-name:var(--font-manrope)] text-[34px] font-medium leading-[1.02] tracking-normal text-[#050505]">
-                  {visibleAssistant || visibleUser || status.detail}
+                  {visibleAssistant || status.detail}
                 </h1>
               </div>
             </div>
@@ -452,18 +487,7 @@ export default function Home() {
                 </p>
               ) : null}
 
-              <div className="grid grid-cols-[52px_1fr_52px] items-center gap-4">
-                <button
-                  className="grid size-[52px] place-items-center rounded-full bg-white text-[#050505]/68 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_10px_rgba(5,5,5,0.06)] transition-[box-shadow,scale,opacity] duration-150 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.12),0_4px_14px_rgba(5,5,5,0.08)] active:scale-[0.96] disabled:opacity-40"
-                  type="button"
-                  aria-label="Cancel response"
-                  title="Cancel response"
-                  disabled={!isActive}
-                  onClick={cancelResponse}
-                >
-                  <Volume2 className="size-5" aria-hidden />
-                </button>
-
+              <div className="flex items-center justify-center">
                 <button
                   className={`mic-button ${isActive ? "mic-button-active" : ""}`}
                   type="button"
@@ -473,20 +497,11 @@ export default function Home() {
                 >
                   {phase === "connecting" || phase === "thinking" ? (
                     <LoaderCircle className="size-7 animate-spin" aria-hidden />
+                  ) : isActive ? (
+                    <X className="size-7" aria-hidden />
                   ) : (
                     <Mic className="size-7" aria-hidden />
                   )}
-                </button>
-
-                <button
-                  className="grid size-[52px] place-items-center rounded-full bg-white text-[#050505]/68 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_10px_rgba(5,5,5,0.06)] transition-[box-shadow,scale,opacity] duration-150 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.12),0_4px_14px_rgba(5,5,5,0.08)] active:scale-[0.96] disabled:opacity-40"
-                  type="button"
-                  aria-label="End call"
-                  title="End"
-                  disabled={!isActive}
-                  onClick={stopConversation}
-                >
-                  <X className="size-5" aria-hidden />
                 </button>
               </div>
             </div>
@@ -530,6 +545,28 @@ function float32ToBase64(input: Float32Array) {
   }
 
   return bytesToBase64(bytes);
+}
+
+function rms(input: Float32Array) {
+  let sum = 0;
+
+  for (let i = 0; i < input.length; i += 1) {
+    sum += input[i] * input[i];
+  }
+
+  return Math.sqrt(sum / Math.max(1, input.length));
+}
+
+function concatFloat32(chunks: Float32Array[], totalLength: number) {
+  const output = new Float32Array(totalLength);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return output;
 }
 
 function base64Pcm16ToFloat32(base64: string) {

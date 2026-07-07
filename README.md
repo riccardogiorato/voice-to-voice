@@ -25,12 +25,12 @@ Optional model overrides:
 
 ```bash
 TOGETHER_STT_MODEL=openai/whisper-large-v3
-TOGETHER_CHAT_MODEL=Qwen/Qwen3.5-9B
+TOGETHER_CHAT_MODEL=Qwen/Qwen2.5-7B-Instruct-Turbo
 TOGETHER_TTS_MODEL=hexgrad/Kokoro-82M
 TOGETHER_TTS_VOICE=af_heart
 ```
 
-`Qwen/Qwen3.5-9B` is the default chat model because it was the fastest sensible serverless model in a quick TTFT check and matches the current Together guidance for latency-sensitive, non-reasoning chat paths. The route sends `reasoning: { enabled: false }` and keeps `max_tokens` tight for voice turns.
+`Qwen/Qwen2.5-7B-Instruct-Turbo` is the default chat model because it reliably streams speakable assistant text for short voice turns. The route keeps `max_tokens` tight and forwards text to TTS sentence by sentence so the UI can show text while audio is generated.
 
 ## Deploy
 
