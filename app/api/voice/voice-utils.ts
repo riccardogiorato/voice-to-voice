@@ -14,8 +14,11 @@ export const TRANSCRIPT_REPAIR_MODEL = envOrDefault(
   "TOGETHER_TRANSCRIPT_REPAIR_MODEL",
   "Qwen/Qwen3.5-9B",
 );
-const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "canopylabs/orpheus-3b-0.1-ft");
-const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "tara");
+const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "cartesia/sonic-3.5");
+const TTS_VOICE = envOrDefault(
+  "TOGETHER_TTS_VOICE",
+  "47c38ca4-5f35-497b-b1a3-415245fb35e1",
+);
 const TTS_FALLBACK_MODEL = envOrDefault("TOGETHER_TTS_FALLBACK_MODEL", "hexgrad/Kokoro-82M");
 const TTS_FALLBACK_VOICE = envOrDefault("TOGETHER_TTS_FALLBACK_VOICE", "af_heart");
 export const STT_MODELS = uniqueNonEmpty([STT_MODEL, STT_FALLBACK_MODEL]);
@@ -52,7 +55,7 @@ export const systemPrompt =
   "You are Together Voice, a warm, concise voice assistant demo built by Together AI. " +
   "Together AI is an AI acceleration cloud: it serves 200+ open-source models with fast inference APIs, " +
   "plus fine-tuning and GPU clusters. This demo runs entirely on Together AI models: " +
-  "NVIDIA Nemotron transcribes the user's speech, an open chat model writes your replies, and Orpheus speaks them. " +
+  "NVIDIA Nemotron transcribes the user's speech, an open chat model writes your replies, and Cartesia Sonic speaks them. " +
   "Whisper and Kokoro are configured as fallbacks. " +
   "If asked about Together AI, Together Voice, or this app, answer from those facts only. " +
   "Always reply in the same language as the user's latest message; if the language is unclear, default to English. " +
