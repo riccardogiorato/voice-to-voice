@@ -28,24 +28,61 @@ const systemPrompt =
   "You are a warm, concise voice assistant for a Together AI demo. " +
   "Answer naturally in one or two short spoken sentences. No markdown.";
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!isAllowedOrigin(request)) {
+    return new Response("Forbidden", { status: 403 });
+  }
+
   return experimental_upgradeWebSocket((client) => {
     const session = new VoiceSession(client);
     session.start();
   });
 }
 
+// Browsers do not enforce CORS on WebSocket upgrades, so any site could open
+// this socket from a visitor's browser and burn Together credits. Reject
+// cross-origin browser connections; requests without an Origin header
+// (curl, test scripts) pass through since a non-browser client can spoof
+// Origin anyway.
+function isAllowedOrigin(request: Request) {
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return false;
+  }
+
+  const extraOrigins = (process.env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  return (
+    originHost === request.headers.get("host") ||
+    extraOrigins.some((entry) => entry === origin || entry === originHost)
+  );
+}
+
 class VoiceSession {
   private stt?: WebSocket;
   private tts?: WebSocket;
   private chatAbort?: AbortController;
-  private messages: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+  private history: ChatMessage[] = [];
+  private turnCount = 0;
+  private ttsContextId = "turn-0";
   private ttsReady = false;
   private pendingSpeech: string[] = [];
   private pendingCommit = false;
   private stopped = false;
   private lastTranscript = "";
   private lastTranscriptAt = 0;
+  private keepaliveTimer?: NodeJS.Timeout;
+  private expiryTimer?: NodeJS.Timeout;
+  private sttReconnects = 0;
+  private ttsReconnects = 0;
 
   constructor(private client: WebSocket) {}
 
@@ -59,6 +96,21 @@ class VoiceSession {
       this.client.close();
       return;
     }
+
+    this.keepaliveTimer = setInterval(() => {
+      if (this.stt?.readyState === WebSocket.OPEN) this.stt.ping();
+      if (this.tts?.readyState === WebSocket.OPEN) this.tts.ping();
+    }, 15_000);
+
+    // End 20s before Vercel's maxDuration (300s) hard-kills the function, so
+    // the client hears why instead of a silent drop.
+    this.expiryTimer = setTimeout(() => {
+      this.send("error", {
+        message: "Session time limit reached. Tap the mic to start a new session.",
+      });
+      this.send("state", { state: "idle" });
+      this.close();
+    }, 280_000);
 
     this.connectStt();
     this.connectTts();
@@ -82,6 +134,17 @@ class VoiceSession {
     this.stt.on("error", () =>
       this.send("error", { message: "Together realtime STT connection failed." }),
     );
+    this.stt.on("close", () => {
+      if (this.stopped) return;
+      if (this.sttReconnects >= 2) {
+        this.send("error", { message: "Speech service disconnected." });
+        return;
+      }
+      this.sttReconnects += 1;
+      setTimeout(() => {
+        if (!this.stopped) this.connectStt();
+      }, 500);
+    });
   }
 
   private connectTts() {
@@ -101,6 +164,18 @@ class VoiceSession {
     this.tts.on("error", () =>
       this.send("error", { message: "Together realtime TTS connection failed." }),
     );
+    this.tts.on("close", () => {
+      if (this.stopped) return;
+      this.ttsReady = false;
+      if (this.ttsReconnects >= 2) {
+        this.send("error", { message: "Voice service disconnected." });
+        return;
+      }
+      this.ttsReconnects += 1;
+      setTimeout(() => {
+        if (!this.stopped) this.connectTts();
+      }, 500);
+    });
   }
 
   private handleClientMessage(data: WebSocket.RawData) {
@@ -169,6 +244,12 @@ class VoiceSession {
       return;
     }
 
+    // Audio from a cancelled turn's context can still arrive after
+    // context.cancel; drop anything not belonging to the current turn.
+    if (message.context_id && message.context_id !== this.ttsContextId) {
+      return;
+    }
+
     if (message.type === "conversation.item.audio_output.delta") {
       this.send("audio.delta", { audio: message.delta, sampleRate: 24000 });
       return;
@@ -211,9 +292,15 @@ class VoiceSession {
     this.send("audio.clear", {});
     this.send("state", { state: "thinking" });
 
+    this.turnCount += 1;
+    this.ttsContextId = `turn-${this.turnCount}`;
+
+    this.history.push({ role: "user", content: transcript });
+    this.trimHistory();
+
     const chatMessages: ChatMessage[] = [
-      this.messages[0],
-      { role: "user", content: transcript },
+      { role: "system", content: systemPrompt },
+      ...this.history,
     ];
 
     const controller = new AbortController();
@@ -271,8 +358,8 @@ class VoiceSession {
       this.commitSpeech();
 
       if (assistant.trim()) {
-        this.messages.push({ role: "assistant", content: assistant.trim() });
-        this.messages = [this.messages[0], ...this.messages.slice(-6)];
+        this.history.push({ role: "assistant", content: assistant.trim() });
+        this.trimHistory();
       }
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -282,6 +369,10 @@ class VoiceSession {
         this.send("state", { state: "listening" });
       }
     }
+  }
+
+  private trimHistory() {
+    if (this.history.length > 8) this.history = this.history.slice(-8);
   }
 
   private speak(text: string) {
@@ -294,6 +385,7 @@ class VoiceSession {
       JSON.stringify({
         type: "input_text_buffer.append",
         text,
+        context_id: this.ttsContextId,
       }),
     );
   }
@@ -307,6 +399,7 @@ class VoiceSession {
     this.tts.send(
       JSON.stringify({
         type: "input_text_buffer.commit",
+        context_id: this.ttsContextId,
       }),
     );
   }
@@ -329,8 +422,12 @@ class VoiceSession {
     this.pendingCommit = false;
 
     if (this.tts && this.tts.readyState === WebSocket.OPEN) {
-      this.tts.send(JSON.stringify({ type: "input_text_buffer.clear" }));
+      this.tts.send(JSON.stringify({ type: "context.cancel", context_id: this.ttsContextId }));
     }
+
+    // Retire the context id so in-flight deltas from the cancelled turn are
+    // dropped by the handleTtsMessage filter instead of reaching the client.
+    this.ttsContextId = `turn-${this.turnCount}-cancelled`;
 
     this.send("audio.clear", {});
   }
@@ -355,6 +452,8 @@ class VoiceSession {
   private close() {
     if (this.stopped) return;
     this.stopped = true;
+    clearInterval(this.keepaliveTimer);
+    clearTimeout(this.expiryTimer);
     this.chatAbort?.abort();
     this.stt?.close();
     this.tts?.close();
