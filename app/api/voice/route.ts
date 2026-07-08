@@ -13,7 +13,8 @@ const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "hexgrad/Kokoro-82M");
 const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "af_heart");
 
 type ClientEvent =
-  | { type: "conversation.start" }
+  | { type: "conversation.start"; history?: { role: string; text: string }[] }
+  | { type: "conversation.reset" }
   | { type: "conversation.stop" }
   | { type: "response.cancel" }
   | { type: "audio.commit" }
@@ -187,6 +188,18 @@ class VoiceSession {
     try {
       event = JSON.parse(data.toString()) as ClientEvent;
     } catch {
+      return;
+    }
+
+    if (event.type === "conversation.start") {
+      this.seedHistory(event.history);
+      return;
+    }
+
+    if (event.type === "conversation.reset") {
+      this.cancelResponse();
+      this.history = [];
+      this.send("state", { state: "listening" });
       return;
     }
 
@@ -377,6 +390,26 @@ class VoiceSession {
 
   private trimHistory() {
     if (this.history.length > 8) this.history = this.history.slice(-8);
+  }
+
+  // Sessions are per-connection, so a stop/expiry/reconnect would otherwise
+  // wipe the assistant's memory while the client still shows the transcript.
+  // The client re-seeds prior turns on conversation.start.
+  private seedHistory(turns?: { role: string; text: string }[]) {
+    if (!Array.isArray(turns) || this.history.length > 0) return;
+
+    this.history = turns
+      .filter(
+        (turn) =>
+          (turn?.role === "user" || turn?.role === "assistant") &&
+          typeof turn.text === "string" &&
+          turn.text.trim().length > 0,
+      )
+      .map((turn) => ({
+        role: turn.role as "user" | "assistant",
+        content: turn.text.trim().slice(0, 800),
+      }));
+    this.trimHistory();
   }
 
   private speak(text: string) {

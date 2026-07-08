@@ -4,6 +4,7 @@ import {
   Cpu,
   Mic,
   MicOff,
+  RotateCcw,
   SlidersHorizontal,
   X,
 } from "lucide-react";
@@ -99,6 +100,17 @@ export default function Home() {
       ? { label: "Muted", detail: "Tap the mic to resume" }
       : phaseCopy[phase];
 
+  function resetConversation() {
+    clearPlayback();
+    setTurns([]);
+    setPartial("");
+    setAssistantDraft("");
+    setError("");
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ type: "conversation.reset" }));
+    }
+  }
+
   function toggleMute() {
     const next = !mutedRef.current;
     mutedRef.current = next;
@@ -148,7 +160,9 @@ export default function Home() {
       socketRef.current = socket;
 
       socket.onopen = async () => {
-        socket.send(JSON.stringify({ type: "conversation.start" }));
+        socket.send(
+          JSON.stringify({ type: "conversation.start", history: turns }),
+        );
         try {
           await wireMicrophone(audioContext, stream, socket);
         } catch (reason) {
@@ -667,6 +681,17 @@ export default function Home() {
                         />
                       </span>
                     </button>
+                    {turns.length > 0 ? (
+                      <button
+                        className="grid size-11 place-items-center rounded-full bg-white/70 text-[#050505]/55 shadow-[0_0_0_1px_rgba(5,5,5,0.06)] transition-[box-shadow,scale,color] duration-150 hover:text-[#050505]/80 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.1)] active:scale-[0.96]"
+                        type="button"
+                        aria-label="New conversation"
+                        title="New conversation"
+                        onClick={resetConversation}
+                      >
+                        <RotateCcw className="size-4" aria-hidden />
+                      </button>
+                    ) : null}
                     <button
                       className="grid size-14 place-items-center rounded-full bg-white text-[#050505]/80 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_8px_rgba(5,5,5,0.06)] transition-[box-shadow,scale] duration-150 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.12),0_3px_12px_rgba(5,5,5,0.08)] active:scale-[0.96]"
                       type="button"
@@ -677,6 +702,14 @@ export default function Home() {
                       <X className="size-5" aria-hidden />
                     </button>
                   </>
+                ) : turns.length > 0 ? (
+                  <button
+                    className="mx-auto rounded-full bg-white/70 px-4 py-2 text-sm font-medium text-[#050505]/60 shadow-[0_0_0_1px_rgba(5,5,5,0.06)] transition-[box-shadow,scale,color] duration-150 hover:text-[#050505]/85 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.1)] active:scale-[0.96]"
+                    type="button"
+                    onClick={resetConversation}
+                  >
+                    New conversation
+                  </button>
                 ) : null}
               </div>
             </div>
