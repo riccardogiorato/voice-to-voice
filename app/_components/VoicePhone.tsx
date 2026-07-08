@@ -118,12 +118,12 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                       Nemotron 3 / Whisper
                     </dd>
                   </div>
-	                  <div className="flex items-center justify-between gap-4">
-	                    <dt className="text-[#050505]/52">Response</dt>
-	                    <dd className="text-right font-medium text-[#050505]">
-	                      GPT-OSS 20B / Nemotron Ultra
-	                    </dd>
-	                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <dt className="text-[#050505]/52">Response</dt>
+                    <dd className="text-right font-medium text-[#050505]">
+                      Nemotron Ultra / MiniMax M2.7
+                    </dd>
+                  </div>
                   <div className="flex items-center justify-between gap-4">
                     <dt className="text-[#050505]/52">Voice</dt>
                     <dd className="font-medium text-[#050505]">Sonic 3 / Kokoro</dd>

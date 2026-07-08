@@ -20,6 +20,9 @@ import { generateAssistantReply } from "./reply";
 import { repairTranscript } from "./transcript-repair";
 import type { ChatMessage, ClientEvent } from "./voice-utils";
 
+const TTS_DONE_AFTER_COMMIT_MS = 8_000;
+const TTS_DONE_AFTER_AUDIO_IDLE_MS = 4_000;
+
 export class VoiceSession {
   private stt?: WebSocket;
   private tts?: WebSocket;
@@ -52,6 +55,7 @@ export class VoiceSession {
   private deferredAnswer?: { rawTranscript: string; merged: boolean };
   private lastRawTranscript = "";
   private lastRepairedTranscript = "";
+  private ttsDoneWatchdog?: NodeJS.Timeout;
 
   constructor(private client: WebSocket) {}
 
@@ -139,7 +143,10 @@ export class VoiceSession {
       if (this.ttsFallbackPending) return;
       if (this.fallbackTts("Voice service disconnected.")) return;
       if (this.ttsReconnects >= 2) {
+        this.clearTtsDoneWatchdog();
         this.send("error", { message: "Voice service disconnected." });
+        this.send("audio.done", {});
+        this.send("state", { state: "listening" });
         return;
       }
       this.ttsReconnects += 1;
@@ -281,17 +288,21 @@ export class VoiceSession {
 
     if (message.type === "conversation.item.audio_output.delta") {
       this.send("audio.delta", { audio: message.delta, sampleRate: 24000 });
+      this.scheduleTtsDoneWatchdog(TTS_DONE_AFTER_AUDIO_IDLE_MS);
       return;
     }
 
     if (message.type === "conversation.item.audio_output.done") {
+      this.clearTtsDoneWatchdog();
       this.send("audio.done", {});
       return;
     }
 
     if (message.type === "conversation.item.tts.failed") {
+      this.clearTtsDoneWatchdog();
       if (this.fallbackTts("Voice generation failed.")) return;
       this.send("error", { message: message.error?.message ?? "TTS failed." });
+      this.send("audio.done", {});
       this.send("state", { state: "listening" });
     }
   }
@@ -319,6 +330,7 @@ export class VoiceSession {
   private fallbackTts(reason: string) {
     if (this.ttsModelIndex >= TTS_MODELS.length - 1) return false;
 
+    this.clearTtsDoneWatchdog();
     this.ttsModelIndex += 1;
     this.ttsReconnects = 0;
     this.ttsReady = false;
@@ -554,6 +566,7 @@ export class VoiceSession {
         context_id: this.ttsContextId,
       }),
     );
+    this.scheduleTtsDoneWatchdog(TTS_DONE_AFTER_COMMIT_MS);
   }
 
   private flushSpeech() {
@@ -601,6 +614,7 @@ export class VoiceSession {
     this.chatAbort = undefined;
     this.pendingSpeech = [];
     this.pendingCommit = false;
+    this.clearTtsDoneWatchdog();
 
     if (this.tts && this.tts.readyState === WebSocket.OPEN) {
       this.tts.send(JSON.stringify({ type: "context.cancel", context_id: this.ttsContextId }));
@@ -611,6 +625,29 @@ export class VoiceSession {
     this.ttsContextId = `turn-${this.turnCount}-cancelled`;
 
     this.send("audio.clear", {});
+  }
+
+  private scheduleTtsDoneWatchdog(
+    delayMs: number,
+    contextId = this.ttsContextId,
+  ) {
+    this.clearTtsDoneWatchdog();
+    this.ttsDoneWatchdog = setTimeout(() => {
+      if (this.stopped || contextId !== this.ttsContextId) return;
+
+      if (this.tts && this.tts.readyState === WebSocket.OPEN) {
+        this.tts.send(JSON.stringify({ type: "context.cancel", context_id: contextId }));
+      }
+
+      this.ttsContextId = `${contextId}-timed-out`;
+      this.send("audio.done", {});
+      this.send("state", { state: "listening" });
+    }, delayMs);
+  }
+
+  private clearTtsDoneWatchdog() {
+    clearTimeout(this.ttsDoneWatchdog);
+    this.ttsDoneWatchdog = undefined;
   }
 
   private send(type: string, payload: Record<string, unknown>) {
@@ -637,6 +674,7 @@ export class VoiceSession {
     clearTimeout(this.expiryTimer);
     clearTimeout(this.answerTimer);
     clearTimeout(this.speechIdleTimer);
+    this.clearTtsDoneWatchdog();
     this.repairAbort?.abort();
     this.chatAbort?.abort();
     this.stt?.close();

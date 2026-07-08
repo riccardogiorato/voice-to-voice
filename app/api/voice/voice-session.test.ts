@@ -47,6 +47,20 @@ test("keeps a pending user utterance when speech resumes before reply grace expi
   ]);
 });
 
+test("recovers to listening when TTS never sends audio done", async () => {
+  const client = new FakeClientSocket();
+  const session = new VoiceSession(client as any);
+
+  (session as any).ttsContextId = "turn-stalled";
+  (session as any).tts = new FakeTtsSocket();
+  (session as any).scheduleTtsDoneWatchdog(10, "turn-stalled");
+
+  await delay(25);
+
+  expect(client.sent).toContainEqual({ type: "audio.done" });
+  expect(client.sent).toContainEqual({ type: "state", state: "listening" });
+});
+
 class FakeClientSocket {
   readyState = 1;
   sent: unknown[] = [];
@@ -59,6 +73,15 @@ class FakeClientSocket {
 
   close() {
     this.readyState = 3;
+  }
+}
+
+class FakeTtsSocket {
+  readyState = 1;
+  sent: unknown[] = [];
+
+  send(payload: string) {
+    this.sent.push(JSON.parse(payload));
   }
 }
 

@@ -58,9 +58,10 @@ type ClientEvent =
   | { type: "audio.input"; audio: string; sampleRate: number };
 
 const SPEECH_RMS_THRESHOLD = 0.024;
-const BARGE_IN_RMS_THRESHOLD = 0.12;
-const BARGE_IN_HOLD_MS = 260;
+const BARGE_IN_RMS_THRESHOLD = 0.06;
+const BARGE_IN_HOLD_MS = 140;
 const ASSISTANT_AUDIO_TAIL_MS = 850;
+const SPEAKING_WATCHDOG_MS = 20_000;
 const VAD_SPEECH_HOLD_MS = 250;
 const RMS_SPEECH_HOLD_MS = 360;
 const MIN_SPEECH_MS = 380;
@@ -118,6 +119,7 @@ export function useVoiceConversation() {
   const debugLogRef = useRef<DebugEntry[]>([]);
   const lastDebugPaintRef = useRef(0);
   const pendingPlaybackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speakingWatchdogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isActive = phase !== "idle";
 
@@ -166,6 +168,11 @@ export function useVoiceConversation() {
       startThinkingSound();
     } else {
       stopThinkingSound();
+    }
+    if (nextPhase === "speaking") {
+      scheduleSpeakingWatchdog();
+    } else {
+      clearSpeakingWatchdog();
     }
     setPhase(nextPhase);
   }
@@ -280,11 +287,13 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "assistant.delta") {
+      scheduleSpeakingWatchdog();
       setAssistantDraft((current) => current + event.text);
       return;
     }
 
     if (event.type === "audio.delta") {
+      scheduleSpeakingWatchdog();
       playPcm16(event.audio, event.sampleRate);
       return;
     }
@@ -407,6 +416,7 @@ export function useVoiceConversation() {
     noiseFloorRef.current = 0.008;
     pendingPhaseRef.current = null;
     clearPendingPlaybackTimer();
+    clearSpeakingWatchdog();
     speechOpenedAtRef.current = Number.NEGATIVE_INFINITY;
     tenVadRef.current?.destroy();
     tenVadRef.current = null;
@@ -437,9 +447,20 @@ export function useVoiceConversation() {
     }
 
     const now = performance.now();
+    const level = rms(input);
+    const vad = tenVadRef.current;
+    const vadDecision = vad?.process(input, sampleRate) ?? null;
+    const vadSpeech = vadDecision
+      ? vadDecision.probability >=
+        (speechOpenRef.current ? VAD_CLOSE_THRESHOLD : VAD_OPEN_THRESHOLD)
+      : null;
+
     if (isAssistantAudioBlockingMic(now) || phaseRef.current === "speaking") {
-      const level = rms(input);
-      if (level < BARGE_IN_RMS_THRESHOLD) {
+      const hasBargeInSpeech =
+        level >= BARGE_IN_RMS_THRESHOLD ||
+        ((vadDecision?.probability ?? 0) >= 0.88 && level >= SPEECH_RMS_THRESHOLD);
+
+      if (!hasBargeInSpeech) {
         resetMicGate();
         bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
         // Speaker leakage must not reach the server while the assistant talks.
@@ -461,17 +482,11 @@ export function useVoiceConversation() {
         sendClientEvent({ type: "response.cancel" }, socket);
         clearPlayback();
         setAssistantDraft("");
+        updatePhase("listening");
         bargeInSentRef.current = true;
       }
     }
 
-    const level = rms(input);
-    const vad = tenVadRef.current;
-    const vadDecision = vad?.process(input, sampleRate) ?? null;
-    const vadSpeech = vadDecision
-      ? vadDecision.probability >=
-        (speechOpenRef.current ? VAD_CLOSE_THRESHOLD : VAD_OPEN_THRESHOLD)
-      : null;
     const openThreshold = Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current * 3);
     const hasSpeech = vadSpeech ?? level >= openThreshold;
     updateMicActivity(
@@ -779,6 +794,23 @@ export function useVoiceConversation() {
     if (!pendingPlaybackTimerRef.current) return;
     clearTimeout(pendingPlaybackTimerRef.current);
     pendingPlaybackTimerRef.current = null;
+  }
+
+  function scheduleSpeakingWatchdog() {
+    clearSpeakingWatchdog();
+    speakingWatchdogTimerRef.current = setTimeout(() => {
+      if (phaseRef.current !== "speaking") return;
+      clearPlayback();
+      assistantAudioBlockUntilRef.current = Number.NEGATIVE_INFINITY;
+      pendingPhaseRef.current = null;
+      updatePhase("listening");
+    }, SPEAKING_WATCHDOG_MS);
+  }
+
+  function clearSpeakingWatchdog() {
+    if (!speakingWatchdogTimerRef.current) return;
+    clearTimeout(speakingWatchdogTimerRef.current);
+    speakingWatchdogTimerRef.current = null;
   }
 
   function ensureTenVad() {

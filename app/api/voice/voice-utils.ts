@@ -8,11 +8,11 @@ const STT_FALLBACK_MODEL = envOrDefault(
 );
 export const CHAT_MODEL = envOrDefault(
   "TOGETHER_CHAT_MODEL",
-  "openai/gpt-oss-20b",
+  "nvidia/nemotron-3-ultra-550b-a55b",
 );
 const CHAT_FALLBACK_MODEL = envOrDefault(
   "TOGETHER_CHAT_FALLBACK_MODEL",
-  "nvidia/nemotron-3-ultra-550b-a55b",
+  "MiniMaxAI/MiniMax-M2.7",
 );
 export const TRANSCRIPT_REPAIR_MODEL = envOrDefault(
   "TOGETHER_TRANSCRIPT_REPAIR_MODEL",
