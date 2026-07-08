@@ -16,6 +16,9 @@ import {
   streamTogetherText,
   systemPrompt,
   TRANSCRIPT_MERGE_WINDOW_MS,
+  TRANSCRIPT_REPAIR_MODEL,
+  TRANSCRIPT_REPAIR_TIMEOUT_MS,
+  transcriptRepairPrompt,
   TTS_MODELS,
 } from "./voice-utils";
 import type { ChatMessage, ClientEvent } from "./voice-utils";
@@ -44,6 +47,10 @@ export class VoiceSession {
   private lastUserTranscript = "";
   private lastUserFinalAt = 0;
   private answerTimer?: NodeJS.Timeout;
+  private repairAbort?: AbortController;
+  private pendingTranscriptId = 0;
+  private lastRawTranscript = "";
+  private lastRepairedTranscript = "";
 
   constructor(private client: WebSocket) {}
 
@@ -159,6 +166,8 @@ export class VoiceSession {
       this.history = [];
       this.lastUserTranscript = "";
       this.lastUserFinalAt = 0;
+      this.lastRawTranscript = "";
+      this.lastRepairedTranscript = "";
       this.send("state", { state: "listening" });
       return;
     }
@@ -217,11 +226,7 @@ export class VoiceSession {
 
       this.lastUserTranscript = finalTranscript;
       this.lastUserFinalAt = now;
-      this.send("transcript.final", {
-        text: finalTranscript,
-        merged: shouldMerge,
-      });
-      this.scheduleAnswer(finalTranscript);
+      this.scheduleAnswer(finalTranscript, shouldMerge);
       return;
     }
 
@@ -423,12 +428,107 @@ export class VoiceSession {
     if (this.history.length > 8) this.history = this.history.slice(-8);
   }
 
-  private scheduleAnswer(transcript: string) {
+  private scheduleAnswer(rawTranscript: string, merged: boolean) {
     clearTimeout(this.answerTimer);
+    this.repairAbort?.abort();
+    this.repairAbort = undefined;
+    const transcriptId = ++this.pendingTranscriptId;
+
     this.answerTimer = setTimeout(() => {
       this.answerTimer = undefined;
-      if (!this.stopped) void this.answer(transcript);
+      if (!this.stopped) {
+        void this.settleTranscriptAndAnswer(rawTranscript, merged, transcriptId);
+      }
     }, REPLY_GRACE_MS);
+  }
+
+  private async settleTranscriptAndAnswer(
+    rawTranscript: string,
+    merged: boolean,
+    transcriptId: number,
+  ) {
+    this.send("state", { state: "thinking" });
+
+    const controller = new AbortController();
+    this.repairAbort = controller;
+    const timeout = setTimeout(
+      () => controller.abort(),
+      TRANSCRIPT_REPAIR_TIMEOUT_MS,
+    );
+
+    let repairedTranscript = rawTranscript;
+    try {
+      repairedTranscript = await this.repairTranscript(rawTranscript, controller.signal);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        console.error("Together transcript repair failed", {
+          model: TRANSCRIPT_REPAIR_MODEL,
+          rawLength: rawTranscript.length,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (this.repairAbort === controller) this.repairAbort = undefined;
+    }
+
+    if (this.stopped || transcriptId !== this.pendingTranscriptId) return;
+
+    this.lastRawTranscript = rawTranscript;
+    this.lastRepairedTranscript = repairedTranscript;
+    this.send("transcript.final", {
+      text: repairedTranscript,
+      merged,
+      repaired:
+        normalizeTranscript(repairedTranscript) !== normalizeTranscript(rawTranscript),
+    });
+    await this.answer(repairedTranscript);
+  }
+
+  private async repairTranscript(rawTranscript: string, signal: AbortSignal) {
+    if (shouldPreserveTranscript(rawTranscript)) return rawTranscript;
+
+    const response = await fetch("https://api.together.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.TOGETHER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: TRANSCRIPT_REPAIR_MODEL,
+        messages: [
+          { role: "system", content: transcriptRepairPrompt },
+          { role: "user", content: rawTranscript },
+        ],
+        max_tokens: 96,
+        temperature: 0,
+        stream: true,
+        reasoning: { enabled: false },
+        reasoning_effort: "low",
+        chat_template_kwargs: {
+          enable_thinking: false,
+          thinking: false,
+        },
+      }),
+      signal,
+    });
+
+    if (!response.ok || !response.body) {
+      const errorBody = await response.text().catch(() => "");
+      const message = compactErrorBody(errorBody);
+      throw new Error(
+        `Together repair failed with ${response.status}${message ? `: ${message}` : ""}`,
+      );
+    }
+
+    let output = "";
+    for await (const delta of streamTogetherText(response.body)) {
+      output += delta;
+    }
+
+    const repairedTranscript = cleanRepairOutput(output);
+    if (isUnsafeRepair(rawTranscript, repairedTranscript)) return rawTranscript;
+    return repairedTranscript;
   }
 
   private retractLastTurnForMerge() {
@@ -499,6 +599,9 @@ export class VoiceSession {
   private cancelResponse() {
     clearTimeout(this.answerTimer);
     this.answerTimer = undefined;
+    this.pendingTranscriptId += 1;
+    this.repairAbort?.abort();
+    this.repairAbort = undefined;
     this.chatAbort?.abort();
     this.chatAbort = undefined;
     this.pendingSpeech = [];
@@ -538,9 +641,62 @@ export class VoiceSession {
     clearInterval(this.keepaliveTimer);
     clearTimeout(this.expiryTimer);
     clearTimeout(this.answerTimer);
+    this.repairAbort?.abort();
     this.chatAbort?.abort();
     this.stt?.close();
     this.tts?.close();
     if (this.client.readyState === WebSocket.OPEN) this.client.close();
   }
 }
+
+function cleanRepairOutput(output: string) {
+  return cleanTranscript(
+    output
+      .replace(/<think>[\s\S]*?<\/think>/giu, "")
+      .replace(/^\s*(?:repaired transcript|transcript|output)\s*:\s*/iu, "")
+      .replace(/^["'`]+|["'`]+$/gu, "")
+      .trim(),
+  );
+}
+
+function shouldPreserveTranscript(transcript: string) {
+  const normalized = normalizeTranscript(transcript);
+  return SHORT_COMMAND_TRANSCRIPTS.has(normalized);
+}
+
+function isUnsafeRepair(rawTranscript: string, repairedTranscript: string) {
+  const normalizedRaw = normalizeTranscript(rawTranscript);
+  const normalizedRepaired = normalizeTranscript(repairedTranscript);
+  if (!normalizedRepaired) return true;
+  if (SHORT_COMMAND_TRANSCRIPTS.has(normalizedRaw)) {
+    return normalizedRepaired !== normalizedRaw;
+  }
+
+  const maxLength = Math.max(rawTranscript.length * 3, rawTranscript.length + 120);
+  if (repairedTranscript.length > maxLength) return true;
+
+  return ANSWER_LIKE_REPAIR_PREFIXES.some((prefix) =>
+    normalizedRepaired.startsWith(prefix),
+  );
+}
+
+const SHORT_COMMAND_TRANSCRIPTS = new Set([
+  "yes",
+  "yeah",
+  "no",
+  "nope",
+  "stop",
+  "cancel",
+  "reset",
+  "mute",
+  "unmute",
+]);
+
+const ANSWER_LIKE_REPAIR_PREFIXES = [
+  "sure",
+  "i can",
+  "i will",
+  "here is",
+  "here are",
+  "the answer",
+];

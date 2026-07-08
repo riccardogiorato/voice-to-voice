@@ -10,6 +10,10 @@ export const CHAT_MODEL = envOrDefault(
   "TOGETHER_CHAT_MODEL",
   "Qwen/Qwen2.5-7B-Instruct-Turbo",
 );
+export const TRANSCRIPT_REPAIR_MODEL = envOrDefault(
+  "TOGETHER_TRANSCRIPT_REPAIR_MODEL",
+  "Qwen/Qwen3.5-9B",
+);
 const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "canopylabs/orpheus-3b-0.1-ft");
 const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "tara");
 const TTS_FALLBACK_MODEL = envOrDefault("TOGETHER_TTS_FALLBACK_MODEL", "hexgrad/Kokoro-82M");
@@ -21,6 +25,7 @@ export const TTS_MODELS = uniqueTtsConfigs([
 ]);
 export const TRANSCRIPT_MERGE_WINDOW_MS = 1500;
 export const REPLY_GRACE_MS = 1000;
+export const TRANSCRIPT_REPAIR_TIMEOUT_MS = 2500;
 const GHOST_TRANSCRIPTS = new Set([
   "you",
   "thank you",
@@ -51,6 +56,17 @@ export const systemPrompt =
   "Whisper and Kokoro are configured as fallbacks. " +
   "If asked about Together AI, Together Voice, or this app, answer from those facts only. " +
   "Answer naturally in one or two short spoken sentences. Spell out numbers and abbreviations. No markdown.";
+
+export const transcriptRepairPrompt =
+  "Rewrite speech-to-text transcripts as the most likely intended user utterance.\n" +
+  "Rules:\n" +
+  "- Fix obvious ASR errors, missing small words, punctuation, casing, and grammar.\n" +
+  "- Preserve the user's meaning and language.\n" +
+  "- Do not answer the user.\n" +
+  "- Do not add facts, names, or details that are not strongly implied.\n" +
+  "- Preserve short commands like yes, no, stop, and cancel exactly.\n" +
+  "- If the transcript is already clear or the intended wording is uncertain, return it unchanged.\n" +
+  "Return only the repaired transcript text.";
 
 // Browsers do not enforce CORS on WebSocket upgrades, so any site could open
 // this socket from a visitor's browser and burn Together credits. Reject

@@ -28,7 +28,7 @@ type TranscriptItem = Turn & {
 type ServerEvent =
   | { type: "state"; state: Phase }
   | { type: "transcript.delta"; text: string }
-  | { type: "transcript.final"; text: string; merged?: boolean }
+  | { type: "transcript.final"; text: string; merged?: boolean; repaired?: boolean }
   | { type: "transcript.ignored"; text?: string }
   | { type: "assistant.delta"; text: string }
   | { type: "audio.delta"; audio: string; sampleRate: number }
