@@ -16,7 +16,7 @@ import {
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 
-type Turn = {
+export type Turn = {
   role: "user" | "assistant";
   text: string;
 };
@@ -69,6 +69,8 @@ const MIN_AUDIO_CHUNK_MS = 80;
 const PRE_ROLL_MS = 320;
 const VAD_OPEN_THRESHOLD = 0.76;
 const VAD_CLOSE_THRESHOLD = 0.46;
+const MAX_COMMITTED_TURNS = 24;
+const MAX_VISIBLE_TRANSCRIPT_ITEMS = 8;
 
 export function useVoiceConversation() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -266,18 +268,7 @@ export function useVoiceConversation() {
 
     if (event.type === "transcript.final") {
       setPartial(null);
-      setAssistantDraft("");
-      setTurns((current) => {
-        const next = current.slice(-5);
-        if (!event.merged) return [...next, { role: "user", text: event.text }];
-
-        if (next.at(-1)?.role === "assistant") next.pop();
-        const lastUserIndex = findLastTurnIndex(next, "user");
-        if (lastUserIndex === -1) return [...next, { role: "user", text: event.text }];
-
-        next[lastUserIndex] = { role: "user", text: event.text };
-        return next;
-      });
+      setTurns((current) => applyTranscriptFinalToTurns(current, event));
       return;
     }
 
@@ -302,7 +293,7 @@ export function useVoiceConversation() {
       setAssistantDraft((draft) => {
         const text = draft.trim();
         if (text) {
-          setTurns((current) => [...current.slice(-5), { role: "assistant", text }]);
+          setTurns((current) => appendAssistantTurn(current, text));
         }
         return "";
       });
@@ -312,6 +303,7 @@ export function useVoiceConversation() {
 
     if (event.type === "audio.clear") {
       clearPlayback();
+      setAssistantDraft("");
       return;
     }
 
@@ -588,6 +580,10 @@ export function useVoiceConversation() {
     type: string,
     payload?: unknown,
   ) {
+    if ((type === "audio.input" || type === "audio.delta") && !shouldKeepAudioDebug()) {
+      return;
+    }
+
     const entry: DebugEntry = {
       at: new Date().toISOString(),
       direction,
@@ -603,6 +599,14 @@ export function useVoiceConversation() {
     if (now - lastDebugPaintRef.current < 250) return;
     lastDebugPaintRef.current = now;
     setDebugVersion((version) => version + 1);
+  }
+
+  function shouldKeepAudioDebug() {
+    const last = debugLogRef.current.at(-1);
+    if (!last || (last.type !== "audio.input" && last.type !== "audio.delta")) return true;
+
+    const elapsedMs = Date.now() - Date.parse(last.at);
+    return Number.isNaN(elapsedMs) || elapsedMs > 1000;
   }
 
   function clearDebugLog() {
@@ -776,9 +780,10 @@ export function useVoiceConversation() {
 
     pendingPlaybackTimerRef.current = setTimeout(() => {
       if (!pendingPhaseRef.current) return;
-      playbackSourcesRef.current = [];
+      clearPlayback();
       assistantAudioBlockUntilRef.current = Number.NEGATIVE_INFINITY;
-      flushPendingPhase();
+      pendingPhaseRef.current = null;
+      updatePhase("listening");
     }, delayMs);
   }
 
@@ -840,31 +845,7 @@ export function useVoiceConversation() {
   }
 
   const transcriptItems = useMemo<TranscriptItem[]>(() => {
-    const items: TranscriptItem[] = turns.slice();
-    if (partial) {
-      const liveUserText = mergeLiveTranscript(partial.baseText, partial.text);
-      const baseUserIndex = partial.baseText
-        ? findMatchingUserTurnIndex(items, partial.baseText)
-        : -1;
-
-      if (baseUserIndex === -1) {
-        items.push({ role: "user", text: liveUserText, live: true });
-      } else {
-        items[baseUserIndex] = {
-          role: "user",
-          text: liveUserText,
-          live: true,
-        };
-      }
-    }
-
-    const liveItems: TranscriptItem[] = [
-      ...(assistantDraft
-        ? [{ role: "assistant" as const, text: assistantDraft, live: true }]
-        : []),
-    ];
-
-    return [...items, ...liveItems].slice(-8);
+    return buildTranscriptItems({ turns, partial, assistantDraft });
   }, [assistantDraft, partial, turns]);
 
   useEffect(() => {
@@ -893,20 +874,68 @@ export function useVoiceConversation() {
 }
 
 
-function findLastTurnIndex(turns: Turn[], role: Turn["role"]) {
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    if (turns[index].role === role) return index;
+export function applyTranscriptFinalToTurns(
+  turns: Turn[],
+  event: { text: string; merged?: boolean },
+) {
+  const next = turns.slice();
+  const lastIndex = next.length - 1;
+  const shouldUpdateCurrentUser =
+    event.merged && lastIndex >= 0 && next[lastIndex].role === "user";
+
+  if (shouldUpdateCurrentUser) {
+    next[lastIndex] = { role: "user", text: event.text };
+    return trimCommittedTurns(next);
   }
-  return -1;
+
+  return trimCommittedTurns([...next, { role: "user", text: event.text }]);
 }
 
-function findMatchingUserTurnIndex(turns: Turn[], text: string) {
-  const normalizedText = normalizeTranscriptText(text);
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    if (turns[index].role !== "user") continue;
-    if (normalizeTranscriptText(turns[index].text) === normalizedText) return index;
+export function appendAssistantTurn(turns: Turn[], text: string) {
+  return trimCommittedTurns([...turns, { role: "assistant", text }]);
+}
+
+export function buildTranscriptItems({
+  turns,
+  partial,
+  assistantDraft,
+}: {
+  turns: Turn[];
+  partial: PartialTranscript | null;
+  assistantDraft: string;
+}): TranscriptItem[] {
+  const items: TranscriptItem[] = turns.slice();
+
+  if (partial) {
+    const liveUserText = mergeLiveTranscript(partial.baseText, partial.text);
+    const lastIndex = items.length - 1;
+    const shouldUpdateCurrentUser =
+      lastIndex >= 0 &&
+      items[lastIndex].role === "user" &&
+      partial.baseText !== undefined &&
+      normalizeTranscriptText(items[lastIndex].text) ===
+        normalizeTranscriptText(partial.baseText);
+
+    if (shouldUpdateCurrentUser) {
+      items[lastIndex] = {
+        role: "user",
+        text: liveUserText,
+        live: true,
+      };
+    } else {
+      items.push({ role: "user", text: liveUserText, live: true });
+    }
   }
-  return -1;
+
+  if (assistantDraft.trim()) {
+    items.push({ role: "assistant", text: assistantDraft, live: true });
+  }
+
+  return items.slice(-MAX_VISIBLE_TRANSCRIPT_ITEMS);
+}
+
+function trimCommittedTurns(turns: Turn[]) {
+  return turns.slice(-MAX_COMMITTED_TURNS);
 }
 
 function mergeLiveTranscript(baseText = "", nextText: string) {
