@@ -25,9 +25,14 @@ type TranscriptItem = Turn & {
   live?: boolean;
 };
 
+type PartialTranscript = {
+  text: string;
+  baseText?: string;
+};
+
 type ServerEvent =
   | { type: "state"; state: Phase }
-  | { type: "transcript.delta"; text: string }
+  | { type: "transcript.delta"; text: string; baseText?: string; merged?: boolean }
   | { type: "transcript.final"; text: string; merged?: boolean; repaired?: boolean }
   | { type: "transcript.ignored"; text?: string }
   | { type: "assistant.delta"; text: string }
@@ -37,7 +42,9 @@ type ServerEvent =
   | { type: "error"; message: string };
 
 const SPEECH_RMS_THRESHOLD = 0.024;
-const BARGE_IN_RMS_THRESHOLD = 0.045;
+const BARGE_IN_RMS_THRESHOLD = 0.12;
+const BARGE_IN_HOLD_MS = 260;
+const ASSISTANT_AUDIO_TAIL_MS = 850;
 const VAD_SPEECH_HOLD_MS = 250;
 const RMS_SPEECH_HOLD_MS = 360;
 const MIN_SPEECH_MS = 380;
@@ -48,7 +55,7 @@ const VAD_CLOSE_THRESHOLD = 0.46;
 
 export function useVoiceConversation() {
   const [phase, setPhase] = useState<Phase>("idle");
-  const [partial, setPartial] = useState("");
+  const [partial, setPartial] = useState<PartialTranscript | null>(null);
   const [assistantDraft, setAssistantDraft] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [error, setError] = useState("");
@@ -70,6 +77,8 @@ export function useVoiceConversation() {
   const lastSpeechAtRef = useRef(Number.NEGATIVE_INFINITY);
   const speechOpenRef = useRef(false);
   const bargeInSentRef = useRef(false);
+  const bargeInStartedAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const assistantAudioBlockUntilRef = useRef(Number.NEGATIVE_INFINITY);
   const pcmLeftoverRef = useRef<Uint8Array | null>(null);
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
   const preRollRef = useRef<Float32Array[]>([]);
@@ -88,7 +97,7 @@ export function useVoiceConversation() {
   function resetConversation() {
     clearPlayback();
     setTurns([]);
-    setPartial("");
+    setPartial(null);
     setAssistantDraft("");
     setError("");
     if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -107,6 +116,7 @@ export function useVoiceConversation() {
     phaseRef.current = nextPhase;
     if (nextPhase === "idle" || nextPhase === "listening") {
       bargeInSentRef.current = false;
+      bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
     }
     setPhase(nextPhase);
   }
@@ -121,7 +131,7 @@ export function useVoiceConversation() {
 
     void ensureTenVad();
     setError("");
-    setPartial("");
+    setPartial(null);
     setAssistantDraft("");
     mutedRef.current = false;
     setMuted(false);
@@ -190,12 +200,21 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "transcript.delta") {
-      setPartial(isDisplayableTranscriptText(event.text) ? event.text : "");
+      setPartial(
+        isDisplayableTranscriptText(event.text)
+          ? {
+              text: event.text,
+              baseText: isDisplayableTranscriptText(event.baseText ?? "")
+                ? event.baseText
+                : undefined,
+            }
+          : null,
+      );
       return;
     }
 
     if (event.type === "transcript.final") {
-      setPartial("");
+      setPartial(null);
       setAssistantDraft("");
       setTurns((current) => {
         const next = current.slice(-5);
@@ -212,7 +231,7 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "transcript.ignored") {
-      setPartial("");
+      setPartial(null);
       return;
     }
 
@@ -300,7 +319,7 @@ export function useVoiceConversation() {
     socketRef.current = null;
     tearDownAudio();
     updatePhase("idle");
-    setPartial("");
+    setPartial(null);
     setAssistantDraft("");
     setMicActivity(0);
   }
@@ -335,6 +354,8 @@ export function useVoiceConversation() {
     micBufferSamplesRef.current = 0;
     lastSpeechAtRef.current = Number.NEGATIVE_INFINITY;
     speechOpenRef.current = false;
+    bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
+    assistantAudioBlockUntilRef.current = Number.NEGATIVE_INFINITY;
     pcmLeftoverRef.current = null;
     preRollRef.current = [];
     preRollSamplesRef.current = 0;
@@ -353,6 +374,10 @@ export function useVoiceConversation() {
     return nextPlayTimeRef.current > audioContext.currentTime;
   }
 
+  function isAssistantAudioBlockingMic(now: number) {
+    return isAssistantAudioActive() || now < assistantAudioBlockUntilRef.current;
+  }
+
   function sendSpeechAudio(
     input: Float32Array,
     sampleRate: number,
@@ -365,9 +390,24 @@ export function useVoiceConversation() {
       return;
     }
 
-    if (isAssistantAudioActive() || phaseRef.current === "thinking" || phaseRef.current === "speaking") {
-      if (rms(input) < BARGE_IN_RMS_THRESHOLD) {
-        // Mic audio must not reach the server while the assistant is talking.
+    const now = performance.now();
+    if (isAssistantAudioBlockingMic(now) || phaseRef.current === "speaking") {
+      const level = rms(input);
+      if (level < BARGE_IN_RMS_THRESHOLD) {
+        resetMicGate();
+        bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
+        // Speaker leakage must not reach the server while the assistant talks.
+        return;
+      }
+
+      if (bargeInStartedAtRef.current === Number.NEGATIVE_INFINITY) {
+        bargeInStartedAtRef.current = now;
+        resetMicGate();
+        return;
+      }
+
+      if (now - bargeInStartedAtRef.current < BARGE_IN_HOLD_MS) {
+        resetMicGate();
         return;
       }
 
@@ -394,7 +434,6 @@ export function useVoiceConversation() {
         : normalizeRange(level, openThreshold * 0.35, openThreshold * 1.8),
     );
 
-    const now = performance.now();
     if (hasSpeech) {
       // Pre-roll must lead the opening frame or speech onsets are clipped.
       if (!speechOpenRef.current) {
@@ -484,6 +523,8 @@ export function useVoiceConversation() {
     });
     playbackSourcesRef.current = [];
     nextPlayTimeRef.current = audioContextRef.current?.currentTime ?? 0;
+    assistantAudioBlockUntilRef.current = Number.NEGATIVE_INFINITY;
+    bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
     pcmLeftoverRef.current = null;
     if (pendingPhaseRef.current) {
       updatePhase(pendingPhaseRef.current);
@@ -506,6 +547,12 @@ export function useVoiceConversation() {
     const startAt = Math.max(audioContext.currentTime + 0.02, nextPlayTimeRef.current);
     source.start(startAt);
     nextPlayTimeRef.current = startAt + buffer.duration;
+    assistantAudioBlockUntilRef.current = Math.max(
+      assistantAudioBlockUntilRef.current,
+      performance.now() +
+        Math.max(0, nextPlayTimeRef.current - audioContext.currentTime) * 1000 +
+        ASSISTANT_AUDIO_TAIL_MS,
+    );
 
     playbackSourcesRef.current.push(source);
     source.onended = () => {
@@ -560,14 +607,31 @@ export function useVoiceConversation() {
   }
 
   const transcriptItems = useMemo<TranscriptItem[]>(() => {
+    const items: TranscriptItem[] = turns.slice();
+    if (partial) {
+      const liveUserText = mergeLiveTranscript(partial.baseText, partial.text);
+      const baseUserIndex = partial.baseText
+        ? findMatchingUserTurnIndex(items, partial.baseText)
+        : -1;
+
+      if (baseUserIndex === -1) {
+        items.push({ role: "user", text: liveUserText, live: true });
+      } else {
+        items[baseUserIndex] = {
+          role: "user",
+          text: liveUserText,
+          live: true,
+        };
+      }
+    }
+
     const liveItems: TranscriptItem[] = [
-      ...(partial ? [{ role: "user" as const, text: partial, live: true }] : []),
       ...(assistantDraft
         ? [{ role: "assistant" as const, text: assistantDraft, live: true }]
         : []),
     ];
 
-    return [...turns, ...liveItems].slice(-8);
+    return [...items, ...liveItems].slice(-8);
   }, [assistantDraft, partial, turns]);
 
   useEffect(() => {
@@ -597,6 +661,31 @@ function findLastTurnIndex(turns: Turn[], role: Turn["role"]) {
     if (turns[index].role === role) return index;
   }
   return -1;
+}
+
+function findMatchingUserTurnIndex(turns: Turn[], text: string) {
+  const normalizedText = normalizeTranscriptText(text);
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    if (turns[index].role !== "user") continue;
+    if (normalizeTranscriptText(turns[index].text) === normalizedText) return index;
+  }
+  return -1;
+}
+
+function mergeLiveTranscript(baseText = "", nextText: string) {
+  const trimmedBase = baseText.trim();
+  const trimmedNext = nextText.trim();
+  if (!trimmedBase) return trimmedNext;
+  if (!trimmedNext) return trimmedBase;
+  return `${trimmedBase.replace(/[.?!,;:\s]+$/u, "")} ${trimmedNext}`;
+}
+
+function normalizeTranscriptText(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isDisplayableTranscriptText(text: string) {

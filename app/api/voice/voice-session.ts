@@ -199,8 +199,10 @@ export class VoiceSession {
 
     if (message.type === "conversation.item.input_audio_transcription.delta") {
       const delta = String(message.delta ?? "");
+      const mergeBase = this.getPendingMergeBase();
       this.send("transcript.delta", {
         text: normalizeTranscript(delta) ? delta : "",
+        ...(mergeBase ? { baseText: mergeBase, merged: true } : {}),
       });
       return;
     }
@@ -473,6 +475,8 @@ export class VoiceSession {
 
     this.lastRawTranscript = rawTranscript;
     this.lastRepairedTranscript = repairedTranscript;
+    this.lastUserTranscript = repairedTranscript;
+    this.lastUserFinalAt = Date.now();
     this.send("transcript.final", {
       text: repairedTranscript,
       merged,
@@ -531,6 +535,12 @@ export class VoiceSession {
   private retractLastTurnForMerge() {
     if (this.history.at(-1)?.role === "assistant") this.history.pop();
     if (this.history.at(-1)?.role === "user") this.history.pop();
+  }
+
+  private getPendingMergeBase() {
+    if (!this.lastUserTranscript) return "";
+    if (Date.now() - this.lastUserFinalAt >= TRANSCRIPT_MERGE_WINDOW_MS) return "";
+    return this.lastUserTranscript;
   }
 
   // Sessions are per-connection, so a stop/expiry/reconnect would otherwise
