@@ -77,7 +77,7 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                 <SlidersHorizontal
                   className={`absolute size-4 transition-[opacity,filter,scale] duration-200 ${
                     settingsOpen
-                      ? "scale-[0.25] opacity-0 blur-[4px]"
+                      ? "scale-[0.25] opacity-0 blur-xs"
                       : "scale-100 opacity-100 blur-0"
                   }`}
                   aria-hidden
@@ -86,7 +86,7 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                   className={`absolute size-4 transition-[opacity,filter,scale] duration-200 ${
                     settingsOpen
                       ? "scale-100 opacity-100 blur-0"
-                      : "scale-[0.25] opacity-0 blur-[4px]"
+                      : "scale-[0.25] opacity-0 blur-xs"
                   }`}
                   aria-hidden
                 />
@@ -161,8 +161,8 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
             <div className="space-y-4">
               {voice.transcriptItems.length > 0 ? (
               <div className="conversation-stream">
-                <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-gradient-to-b from-[#fdfcf9]/80 to-transparent" />
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-gradient-to-t from-[#fdfcf9]/72 to-transparent" />
+                <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-linear-to-b from-[#fdfcf9]/80 to-transparent" />
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-linear-to-t from-[#fdfcf9]/72 to-transparent" />
                 <div
                   ref={voice.conversationScrollRef}
                   className="conversation-scroll max-h-[240px] overflow-y-auto overscroll-contain"
@@ -215,7 +215,7 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                         <Mic
                           className={`absolute size-5 transition-[opacity,filter,scale] duration-200 ${
                             voice.muted
-                              ? "scale-[0.25] opacity-0 blur-[4px]"
+                              ? "scale-[0.25] opacity-0 blur-xs"
                               : "scale-100 opacity-100 blur-0"
                           }`}
                           aria-hidden
@@ -224,7 +224,7 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                           className={`absolute size-5 transition-[opacity,filter,scale] duration-200 ${
                             voice.muted
                               ? "scale-100 opacity-100 blur-0"
-                              : "scale-[0.25] opacity-0 blur-[4px]"
+                              : "scale-[0.25] opacity-0 blur-xs"
                           }`}
                           aria-hidden
                         />
@@ -268,4 +268,3 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
     </main>
   );
 }
-
