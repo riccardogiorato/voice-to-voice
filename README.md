@@ -6,6 +6,51 @@ Browser mic -> Vercel WebSocket -> Together realtime STT -> Together chat stream
 
 The browser never receives the Together API key. It only connects to `/api/voice`.
 
+## Voice Pipeline TLDR
+
+The important trick is that the browser does local endpointing, while Together does the actual transcription, reply, and speech generation. A speech segment ending is not always a full user turn ending: the server can pause a pending answer when the browser says speech started again.
+
+```mermaid
+sequenceDiagram
+  autonumber
+
+  box rgb(238, 247, 255) Browser
+    participant B as Browser<br/>TEN VAD + UI
+  end
+
+  box rgb(255, 246, 226) Server
+    participant S as /api/voice
+  end
+
+  box rgb(239, 249, 236) Together
+    participant T as Together models
+  end
+
+  B->>S: speech.started
+  B->>S: audio.input chunks
+  S->>T: STT: nvidia/nemotron-3-asr-streaming-0.6b
+  S->>B: transcript.delta
+
+  B->>S: audio.commit
+  S->>T: repair: Qwen/Qwen3.5-9B
+  S->>B: transcript.final
+
+  S->>T: reply: Qwen/Qwen2.5-7B-Instruct-Turbo
+  S->>T: TTS: cartesia/sonic-3
+  S->>B: assistant text + audio
+```
+
+Current event flow in words:
+
+1. Browser microphone records audio.
+2. TEN VAD, loaded as WASM in the browser, decides when speech opens.
+3. The client immediately sends `speech.started` so the server can pause pending repair or reply work.
+4. The client buffers and streams `audio.input` chunks while speech is active.
+5. TEN VAD decides speech ended after short silence, then the client sends `audio.commit`.
+6. Together STT streams `transcript.delta` for provisional UI text, then `transcript.completed`.
+7. The server merges nearby speech segments, waits `REPLY_GRACE_MS`, repairs the full transcript, and sends `transcript.final`.
+8. The assistant reply uses the repaired transcript, streams text to the UI, and streams sentence chunks through TTS to browser playback.
+
 ## Run
 
 ```bash
