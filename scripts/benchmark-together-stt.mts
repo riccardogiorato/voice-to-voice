@@ -5,20 +5,20 @@
 // transcription models over the WebSocket API
 // (wss://api.together.ai/v1/realtime?intent=transcription&model=...).
 //
-//   * Synthesizes three short utterances once via Together REST TTS
-//     (hexgrad/Kokoro-82M, voice af_heart, response_format raw @ 24 kHz s16le),
-//     resamples 24 kHz -> 16 kHz with linear interpolation, and saves them as
-//     test-fixtures/stt-bench-1.pcm, stt-bench-2.pcm, stt-bench-3.pcm (skipped
-//     if the file already exists).
+//   * Synthesizes short multilingual utterances once via Together REST TTS
+//     using language-matched voices, resamples 24 kHz -> 16 kHz with linear
+//     interpolation, and saves them as test-fixtures/stt-bench-<language>-<index>.pcm
+//     plus playable .wav sidecars (skipped if the file and sidecar metadata
+//     already match).
 //   * For every model x fixture x run, opens a transcription websocket with
 //     turn_detection=none, streams the fixture as 80 ms (2560-byte) base64 s16le
 //     chunks paced in real time, then sends input_audio_buffer.commit and
 //     measures commit -> conversation.item.input_audio_transcription.completed
 //     latency (commitToFinalMs) plus time-to-first-delta (firstDeltaMs, may be
 //     null with turn_detection=none) and the per-run transcript.
-//   * Computes word-level WER against the known ground truth with an in-script
-//     Levenshtein implementation (lowercase, strip punctuation, split on
-//     whitespace; WER = distance / referenceWordCount).
+//   * Computes WER or CER against the known ground truth with an in-script
+//     Levenshtein implementation. WER uses Unicode-aware word normalization for
+//     whitespace-delimited languages; CER is used for Japanese.
 //   * Per-connection hard timeout: 30 s. Any run failure (socket error,
 //     timeout, transcription.failed, or a generic {type:'error'} event) is
 //     recorded and the benchmark continues with the next run; nothing aborts
@@ -32,9 +32,9 @@
 // node: builtin. Requires Node 20+ (global fetch, performance, Buffer, ws).
 //
 // Usage:
-//   TOGETHER_API_KEY=... node scripts/benchmark-together-stt.mts
-//   node scripts/benchmark-together-stt.mts --models "openai/whisper-large-v3" --runs 3
-//   STT_BENCH_MODELS="a,b" node scripts/benchmark-together-stt.mts --runs 5
+//   TOGETHER_API_KEY=... bun scripts/benchmark-together-stt.mts
+//   bun scripts/benchmark-together-stt.mts --models "openai/whisper-large-v3" --runs 3
+//   STT_BENCH_MODELS="a,b" bun scripts/benchmark-together-stt.mts --runs 5
 //
 // Reads TOGETHER_API_KEY from process.env. Also tries to load ./.env when the
 // key is not already exported, so the project's gitignored .env works out of
@@ -48,12 +48,23 @@ import WebSocket from 'ws';
 
 type CliArgs = {
   models: string[] | null;
+  languages: string[] | null;
   runs: number;
   help: boolean;
 };
 
+type ScoringMetric = 'wer' | 'cer';
+
+type TtsConfig = {
+  model: string;
+  voice: string;
+  sampleRate: number;
+};
+
 type FixtureDefinition = {
   name: string;
+  language: string;
+  scoring: ScoringMetric;
   text: string;
 };
 
@@ -81,13 +92,15 @@ type RunResult = {
   model: string;
   fixtureIndex: number;
   fixture: string;
+  language: string;
   groundTruth: string;
   run: number;
   status: RunStatus;
   commitToFinalMs: number | null;
   firstDeltaMs: number | null;
   transcript: string;
-  wer: number | null;
+  metric: ScoringMetric;
+  errorRate: number | null;
   error: string | null;
   totalElapsedMs: number;
 };
@@ -98,7 +111,7 @@ type ModelSummary = {
   ok: number;
   errors: number;
   medianCommitToFinalMs: number | null;
-  meanWer: number | null;
+  meanErrorRate: number | null;
   lastError: string | null;
   runsData: RunResult[];
 };
@@ -121,15 +134,19 @@ const TURN_DETECTION = 'none';
 
 const CONN_TIMEOUT_MS = 30_000; // per-connection overall timeout
 
-// Together REST TTS, used to synthesize fixtures (mirrors
-// scripts/e2e-voice-latency.mjs ensureFixture()). Kokoro-82M always returns
-// 24 kHz s16le mono PCM regardless of the requested sample_rate, so we request
-// 24000 and resample down to 16 kHz.
+// Together REST TTS, used to synthesize fixtures. We use language-matched voices
+// where Together exposes them so the STT benchmark is not polluted by an
+// English TTS voice trying to pronounce other languages.
 const TTS_ENDPOINT = 'https://api.together.ai/v1/audio/speech';
-const TTS_MODEL = 'hexgrad/Kokoro-82M';
-const TTS_VOICE = 'af_heart';
 const TTS_SYNTH_SAMPLE_RATE = 24000;
 const FIXTURE_SAMPLE_RATE = 16000;
+
+const TTS_BY_LANGUAGE: Record<string, TtsConfig> = {
+  en: { model: 'hexgrad/Kokoro-82M', voice: 'af_heart', sampleRate: TTS_SYNTH_SAMPLE_RATE },
+  fr: { model: 'hexgrad/Kokoro-82M', voice: 'ff_siwis', sampleRate: TTS_SYNTH_SAMPLE_RATE },
+  it: { model: 'hexgrad/Kokoro-82M', voice: 'if_sara', sampleRate: TTS_SYNTH_SAMPLE_RATE },
+  ja: { model: 'hexgrad/Kokoro-82M', voice: 'jf_alpha', sampleRate: TTS_SYNTH_SAMPLE_RATE },
+};
 
 // 80 ms of audio at 16 kHz, 16-bit = 16000 * 2 * 0.08 = 2560 bytes.
 const CHUNK_BYTES = 2560;
@@ -137,11 +154,57 @@ const CHUNK_INTERVAL_MS = 80; // stream chunks in real time
 
 const OUT_DIR = 'bench-results';
 
-// Three utterances with known ground-truth text.
+// Short utterances with known ground-truth text. The fixture names are stable so
+// generated audio is reused between runs.
 const FIXTURES: FixtureDefinition[] = [
-  { name: 'stt-bench-1.pcm', text: 'Hello! How are you doing today?' },
-  { name: 'stt-bench-2.pcm', text: 'What is the fastest open source language model right now?' },
-  { name: 'stt-bench-3.pcm', text: 'Please summarize the plot of Romeo and Juliet in one sentence.' },
+  {
+    name: 'stt-bench-en-1.pcm',
+    language: 'en',
+    scoring: 'wer',
+    text: 'Hello! How are you doing today?',
+  },
+  {
+    name: 'stt-bench-en-2.pcm',
+    language: 'en',
+    scoring: 'wer',
+    text: 'What is the fastest open source language model right now?',
+  },
+  {
+    name: 'stt-bench-fr-1.pcm',
+    language: 'fr',
+    scoring: 'wer',
+    text: "Bonjour, peux-tu me donner la météo pour Paris aujourd'hui ?",
+  },
+  {
+    name: 'stt-bench-fr-2.pcm',
+    language: 'fr',
+    scoring: 'wer',
+    text: 'Je voudrais réserver une table pour deux personnes ce soir.',
+  },
+  {
+    name: 'stt-bench-it-1.pcm',
+    language: 'it',
+    scoring: 'wer',
+    text: 'Ciao, puoi dirmi che tempo fa a Roma oggi?',
+  },
+  {
+    name: 'stt-bench-it-2.pcm',
+    language: 'it',
+    scoring: 'wer',
+    text: 'Vorrei prenotare un tavolo per due persone stasera.',
+  },
+  {
+    name: 'stt-bench-ja-1.pcm',
+    language: 'ja',
+    scoring: 'cer',
+    text: 'こんにちは、今日の東京の天気を教えてください。',
+  },
+  {
+    name: 'stt-bench-ja-2.pcm',
+    language: 'ja',
+    scoring: 'cer',
+    text: '今夜二人分の席を予約したいです。',
+  },
 ];
 
 // ---------- dotenv loader (matches scripts/benchmark-together-chat.mjs) ----------
@@ -173,7 +236,7 @@ function loadDotEnv(file: string) {
 // ---------- CLI ----------
 
 function parseArgs(argv: string[]): CliArgs {
-  const a: CliArgs = { models: null, runs: 3, help: false };
+  const a: CliArgs = { models: null, languages: null, runs: 3, help: false };
   const rest = [...argv];
   const need = (name: string) => {
     const v = rest.shift();
@@ -187,6 +250,12 @@ function parseArgs(argv: string[]): CliArgs {
         a.models = need('--models')
           .split(',')
           .map((s) => s.trim())
+          .filter(Boolean);
+        break;
+      case '--languages':
+        a.languages = need('--languages')
+          .split(',')
+          .map((s) => s.trim().toLowerCase())
           .filter(Boolean);
         break;
       case '--runs':
@@ -207,25 +276,30 @@ function printHelp() {
   console.log(`benchmark-together-stt.mts - Together realtime STT latency + accuracy benchmark
 
 Usage:
-  node scripts/benchmark-together-stt.mts [options]
+  bun scripts/benchmark-together-stt.mts [options]
 
 Options:
   --models "a,b,c"   Comma-separated realtime transcription model ids to benchmark
                      (default: ${DEFAULT_MODELS.join(',')}). Also set via the
                      STT_BENCH_MODELS env var; --models wins.
+  --languages "it,fr" Comma-separated fixture language codes to run
+                     (default: en,fr,it,ja). Also set via the
+                     STT_BENCH_LANGUAGES env var; --languages wins.
   --runs N           Repetitions per model x fixture (default 3)
   -h, --help         Show this help
 
 Env:
   TOGETHER_API_KEY   Required. Also auto-loaded from ./.env if not exported.
   STT_BENCH_MODELS   Comma-separated model ids (used only if --models is not given).
+  STT_BENCH_LANGUAGES Comma-separated fixture language codes (used only if
+                      --languages is not given).
 
 Notes:
   Streams each fixture as 80 ms (2560-byte) base64 s16le chunks at real-time
   pace over a transcription websocket with turn_detection=none, then commits.
-  Measures commit -> transcription.completed latency and word-level WER vs the
-  known ground truth. Per-connection timeout is 30 s. Run failures are recorded
-  and never abort the whole benchmark. JSON results go to
+  Measures commit -> transcription.completed latency and transcript error vs
+  the known ground truth. Per-connection timeout is 30 s. Run failures are
+  recorded and never abort the whole benchmark. JSON results go to
   ${OUT_DIR}/together-stt-<timestamp>.json.
 `);
 }
@@ -253,12 +327,14 @@ function trunc(s: unknown, n: number): string {
 }
 
 function printRunsTable(rows: RunResult[]) {
-  const cols = ['fixture', 'run', 'commitToFinalMs', 'WER', 'transcript'];
+  const cols = ['lang', 'fixture', 'run', 'commitToFinalMs', 'metric', 'error', 'transcript'];
   const data = rows.map((r) => [
+    r.language,
     r.fixture,
     String(r.run),
     r.status === 'ok' ? fmtMs(r.commitToFinalMs) : 'ERR',
-    r.status === 'ok' && r.wer != null ? fmtPct(r.wer) : '-',
+    r.metric.toUpperCase(),
+    r.status === 'ok' && r.errorRate != null ? fmtPct(r.errorRate) : '-',
     r.status === 'ok' ? trunc(r.transcript || '', 60) : trunc(r.error || 'error', 60),
   ]);
   const widths = cols.map((c, i) =>
@@ -273,12 +349,12 @@ function printRunsTable(rows: RunResult[]) {
 }
 
 function printSummaryTable(summaries: ModelSummary[]) {
-  const cols = ['Model', 'OK', 'Median commitToFinal(ms)', 'Mean WER'];
+  const cols = ['Model', 'OK', 'Median commitToFinal(ms)', 'Mean error'];
   const data = summaries.map((s) => [
     trunc(s.model, 46),
     `${s.ok}/${s.runs}`,
     s.ok > 0 ? fmtMs(s.medianCommitToFinalMs) : 'ERR',
-    s.ok > 0 ? fmtPct(s.meanWer) : '-',
+    s.ok > 0 ? fmtPct(s.meanErrorRate) : '-',
   ]);
   const widths = cols.map((c, i) =>
     Math.max(c.length, ...data.map((r) => r[i].length)),
@@ -294,20 +370,32 @@ function printSummaryTable(summaries: ModelSummary[]) {
   }
 }
 
-// ---------- WER ----------
+// ---------- transcript scoring ----------
 
-// Lowercase, strip punctuation (remove non-alphanumeric / non-space chars),
-// collapse whitespace, split into words.
+function normalizeComparableText(text: unknown): string {
+  return String(text ?? '')
+    .normalize('NFKD')
+    .replace(/\p{Mark}/gu, '')
+    .toLowerCase();
+}
+
+// Unicode-aware word tokens for whitespace-delimited languages.
 function normalizeWords(text: unknown): string[] {
-  const s = String(text ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
+  const s = normalizeComparableText(text)
+    .replace(/[^\p{Letter}\p{Number}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return s.length ? s.split(' ') : [];
 }
 
-// Word-level Levenshtein distance between two word arrays (two rolling rows).
+// Character tokens for languages where whitespace does not mark word
+// boundaries reliably, such as Japanese.
+function normalizeCharacters(text: unknown): string[] {
+  const s = normalizeComparableText(text).replace(/[^\p{Letter}\p{Number}]/gu, '');
+  return Array.from(s);
+}
+
+// Levenshtein distance between two token arrays (two rolling rows).
 function levenshtein(a: string[], b: string[]): number {
   const m = a.length;
   const n = b.length;
@@ -327,26 +415,92 @@ function levenshtein(a: string[], b: string[]): number {
   return prev[n];
 }
 
-// WER = word-level edit distance / reference word count. Returns null when the
-// reference has no words (would divide by zero).
-function computeWer(reference: string, hypothesis: string): number | null {
-  const ref = normalizeWords(reference);
-  const hyp = normalizeWords(hypothesis);
+// Error rate = token-level edit distance / reference token count. Returns null
+// when the reference has no tokens (would divide by zero).
+function computeErrorRate(
+  reference: string,
+  hypothesis: string,
+  metric: ScoringMetric,
+): number | null {
+  const ref = metric === 'cer' ? normalizeCharacters(reference) : normalizeWords(reference);
+  const hyp = metric === 'cer' ? normalizeCharacters(hypothesis) : normalizeWords(hypothesis);
   if (ref.length === 0) return hyp.length === 0 ? 0 : null;
   return levenshtein(ref, hyp) / ref.length;
 }
 
 // ---------- fixture synthesis ----------
 
+function ttsConfigFor(language: string): TtsConfig {
+  const config = TTS_BY_LANGUAGE[language];
+  if (!config) throw new Error(`No TTS config for fixture language "${language}"`);
+  return config;
+}
+
+function readFixtureMeta(metaPath: string) {
+  try {
+    return JSON.parse(fs.readFileSync(metaPath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function fixtureMetaMatches(
+  fixture: FixtureDefinition,
+  config: TtsConfig,
+  meta: Record<string, unknown> | null,
+) {
+  return (
+    meta?.text === fixture.text &&
+    meta?.language === fixture.language &&
+    meta?.scoring === fixture.scoring &&
+    meta?.ttsModel === config.model &&
+    meta?.ttsVoice === config.voice &&
+    meta?.ttsSampleRate === config.sampleRate &&
+    meta?.fixtureSampleRate === FIXTURE_SAMPLE_RATE
+  );
+}
+
+function wavPathForPcm(pcmPath: string) {
+  return pcmPath.endsWith('.pcm') ? `${pcmPath.slice(0, -4)}.wav` : `${pcmPath}.wav`;
+}
+
+function buildPcm16MonoWav(pcm: Buffer, sampleRate: number) {
+  const header = Buffer.alloc(44);
+  const byteRate = sampleRate * 2;
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(2, 32); // block align
+  header.writeUInt16LE(16, 34); // bits per sample
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+function writePlayableWav(pcmPath: string, pcm: Buffer) {
+  fs.writeFileSync(wavPathForPcm(pcmPath), buildPcm16MonoWav(pcm, FIXTURE_SAMPLE_RATE));
+}
+
 // Synthesize one 16 kHz s16le mono PCM fixture via Together REST TTS, skipping
-// if the file already exists. Kokoro-82M always returns 24 kHz s16le mono PCM
-// regardless of the requested sample_rate, so we request 24000 and resample the
-// 24 kHz response down to 16 kHz with linear interpolation. The resample block
-// below is duplicated verbatim from ensureFixture() in
-// scripts/e2e-voice-latency.mjs (do not import from it or modify it).
+// if the file and metadata already match. The API returns 24 kHz s16le mono PCM
+// for the fixture models configured here, so we request 24000 and resample the
+// response down to 16 kHz with linear interpolation. The resample block below is
+// duplicated from ensureFixture() in scripts/e2e-voice-latency.mjs.
 async function ensureFixture(fixture: FixtureDefinition, apiKey: string) {
   const fixturePath = path.join('test-fixtures', fixture.name);
-  if (fs.existsSync(fixturePath)) return;
+  const metaPath = `${fixturePath}.json`;
+  const config = ttsConfigFor(fixture.language);
+  if (fs.existsSync(fixturePath) && fixtureMetaMatches(fixture, config, readFixtureMeta(metaPath))) {
+    const wavPath = wavPathForPcm(fixturePath);
+    if (!fs.existsSync(wavPath)) writePlayableWav(fixturePath, fs.readFileSync(fixturePath));
+    return;
+  }
 
   fs.mkdirSync(path.dirname(fixturePath), { recursive: true });
 
@@ -357,11 +511,11 @@ async function ensureFixture(fixture: FixtureDefinition, apiKey: string) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: TTS_MODEL,
+      model: config.model,
       input: fixture.text,
-      voice: TTS_VOICE,
+      voice: config.voice,
       response_format: 'raw',
-      sample_rate: TTS_SYNTH_SAMPLE_RATE,
+      sample_rate: config.sampleRate,
     }),
   });
 
@@ -382,7 +536,7 @@ async function ensureFixture(fixture: FixtureDefinition, apiKey: string) {
     input[i] = bytes.readInt16LE(i * 2) / 32768;
   }
 
-  const ratio = TTS_SYNTH_SAMPLE_RATE / FIXTURE_SAMPLE_RATE; // 1.5
+  const ratio = config.sampleRate / FIXTURE_SAMPLE_RATE; // 1.5 for 24 kHz -> 16 kHz
   const outputLength = Math.max(1, Math.round(input.length / ratio));
   const resampled = new Float32Array(outputLength);
   for (let i = 0; i < outputLength; i += 1) {
@@ -402,8 +556,28 @@ async function ensureFixture(fixture: FixtureDefinition, apiKey: string) {
   // ---- end duplicated resample code ----
 
   fs.writeFileSync(fixturePath, pcm16);
+  writePlayableWav(fixturePath, pcm16);
+  fs.writeFileSync(
+    metaPath,
+    JSON.stringify(
+      {
+        text: fixture.text,
+        language: fixture.language,
+        scoring: fixture.scoring,
+        ttsModel: config.model,
+        ttsVoice: config.voice,
+        ttsSampleRate: config.sampleRate,
+        fixtureSampleRate: FIXTURE_SAMPLE_RATE,
+        playablePath: wavPathForPcm(fixturePath),
+        generatedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ) + '\n',
+  );
   console.log(
-    `Synthesized fixture: ${fixturePath} (${bytes.length} bytes -> resampled ${pcm16.length} bytes @ ${FIXTURE_SAMPLE_RATE} Hz)`,
+    `Synthesized fixture: ${fixturePath} (${fixture.language}, ${config.model}/${config.voice}, ` +
+      `${bytes.length} bytes -> resampled ${pcm16.length} bytes @ ${FIXTURE_SAMPLE_RATE} Hz)`,
   );
 }
 
@@ -436,18 +610,21 @@ function buildResult(
       : null;
   const status = state.status;
   const transcript = state.transcript || '';
-  const wer = status === 'ok' ? computeWer(fixture.text, transcript) : null;
+  const errorRate =
+    status === 'ok' ? computeErrorRate(fixture.text, transcript, fixture.scoring) : null;
   return {
     model,
     fixtureIndex,
     fixture: fixture.name,
+    language: fixture.language,
     groundTruth: fixture.text,
     run: runIndex,
     status,
     commitToFinalMs,
     firstDeltaMs,
     transcript,
-    wer,
+    metric: fixture.scoring,
+    errorRate,
     error: status === 'error' ? state.error || 'unknown error' : null,
     totalElapsedMs,
   };
@@ -580,14 +757,14 @@ function summarize(model: string, runs: RunResult[]): ModelSummary {
   const ok = runs.filter((r) => r.status === 'ok');
   const errs = runs.filter((r) => r.status === 'error');
   const commitVals = ok.map((r) => r.commitToFinalMs).filter((v): v is number => v != null);
-  const werVals = ok.map((r) => r.wer).filter((v): v is number => v != null);
+  const errorRateVals = ok.map((r) => r.errorRate).filter((v): v is number => v != null);
   return {
     model,
     runs: runs.length,
     ok: ok.length,
     errors: errs.length,
     medianCommitToFinalMs: median(commitVals),
-    meanWer: mean(werVals),
+    meanErrorRate: mean(errorRateVals),
     lastError: errs.length ? errs[errs.length - 1].error : null,
     runsData: runs,
   };
@@ -632,8 +809,34 @@ async function main() {
   }
   if (!models || !models.length) models = [...DEFAULT_MODELS];
 
+  // Resolve fixtures: --languages wins, then STT_BENCH_LANGUAGES env, then all.
+  let languages = args.languages && args.languages.length ? args.languages : null;
+  if (!languages) {
+    const envLanguages = process.env.STT_BENCH_LANGUAGES;
+    if (envLanguages && envLanguages.trim()) {
+      languages = envLanguages.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    }
+  }
+  const knownLanguages = Array.from(new Set(FIXTURES.map((f) => f.language))).sort();
+  const selectedFixtures = languages?.length
+    ? FIXTURES.filter((f) => languages.includes(f.language))
+    : FIXTURES;
+  if (languages?.length) {
+    const unknownLanguages = languages.filter((lang) => !knownLanguages.includes(lang));
+    if (unknownLanguages.length) {
+      console.error(
+        `Unknown language code(s): ${unknownLanguages.join(', ')}. Known: ${knownLanguages.join(', ')}`,
+      );
+      process.exit(2);
+    }
+  }
+  if (!selectedFixtures.length) {
+    console.error(`No fixtures selected. Known language codes: ${knownLanguages.join(', ')}`);
+    process.exit(2);
+  }
+
   // Ensure all fixtures exist (synthesize via TTS on first run).
-  for (const f of FIXTURES) {
+  for (const f of selectedFixtures) {
     try {
       await ensureFixture(f, apiKey);
     } catch (e) {
@@ -643,12 +846,15 @@ async function main() {
   }
 
   // Preload fixture bytes + precompute chunks once (reused across models/runs).
-  const fixtures = FIXTURES.map((f, i) => {
+  const fixtures = selectedFixtures.map((f, i) => {
     const fixturePath = path.join('test-fixtures', f.name);
     const pcm = fs.readFileSync(fixturePath);
     return {
       index: i + 1,
       name: f.name,
+      language: f.language,
+      scoring: f.scoring,
+      tts: ttsConfigFor(f.language),
       text: f.text,
       path: fixturePath,
       bytes: pcm.length,
@@ -661,6 +867,7 @@ async function main() {
   console.log('─'.repeat(53));
   console.log(`Models      : ${models.length} (${models.map((m) => trunc(m, 30)).join(', ')})`);
   console.log(`Runs/model  : ${args.runs} (per fixture)`);
+  console.log(`Languages   : ${Array.from(new Set(fixtures.map((f) => f.language))).join(', ')}`);
   console.log(`Fixtures    : ${fixtures.length}`);
   console.log(`Chunk       : ${CHUNK_BYTES} bytes / ${CHUNK_INTERVAL_MS} ms @ ${FIXTURE_SAMPLE_RATE} Hz`);
   console.log(`Timeout     : ${CONN_TIMEOUT_MS} ms (per connection)`);
@@ -684,7 +891,7 @@ async function main() {
           console.log(
             `[${doneCount}/${total}] ${trunc(model, 30)} ${fx.name} run ${r}/${args.runs}  ok ` +
               `commitToFinal=${fmtMs(res.commitToFinalMs)}ms firstDelta=${fmtMs(res.firstDeltaMs)}ms ` +
-              `wer=${fmtPct(res.wer)}  "${trunc(res.transcript, 60)}"`,
+              `${res.metric}=${fmtPct(res.errorRate)}  "${trunc(res.transcript, 60)}"`,
           );
         } else {
           console.log(
@@ -704,14 +911,14 @@ async function main() {
     console.log(
       `Summary: ${trunc(model, 40)}  ok ${summary.ok}/${summary.runs}  ` +
         `median commitToFinal=${fmtMs(summary.medianCommitToFinalMs)}ms  ` +
-        `mean WER=${fmtPct(summary.meanWer)}` +
+        `mean error=${fmtPct(summary.meanErrorRate)}` +
         (summary.errors
           ? `  (${summary.errors} error${summary.errors === 1 ? '' : 's'}: ${trunc(summary.lastError || '', 80)})`
           : ''),
     );
   }
 
-  console.log('\nSummary (median commitToFinal + mean WER over successful runs)');
+  console.log('\nSummary (median commitToFinal + mean transcript error over successful runs)');
   console.log('─'.repeat(53));
   printSummaryTable(summaries);
 
@@ -739,17 +946,18 @@ async function main() {
           index: f.index,
           path: f.path,
           name: f.name,
+          language: f.language,
+          scoring: f.scoring,
+          tts: f.tts,
           groundTruth: f.text,
           bytes: f.bytes,
           chunks: f.chunks.length,
         })),
         tts: {
           endpoint: TTS_ENDPOINT,
-          model: TTS_MODEL,
-          voice: TTS_VOICE,
           responseFormat: 'raw',
-          synthSampleRate: TTS_SYNTH_SAMPLE_RATE,
           fixtureSampleRate: FIXTURE_SAMPLE_RATE,
+          configsByLanguage: TTS_BY_LANGUAGE,
         },
       },
       models: summaries,
