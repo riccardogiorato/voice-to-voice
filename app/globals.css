@@ -150,7 +150,7 @@ button {
 
 .conversation-stream {
   position: relative;
-  height: 154px;
+  min-height: 132px;
   overflow: hidden;
   border-radius: 30px;
   background:
@@ -162,6 +162,20 @@ button {
     0 18px 48px rgba(92, 62, 98, 0.08);
   backdrop-filter: blur(22px);
   mask-image: linear-gradient(to bottom, transparent 0, black 18%, black 88%, transparent 100%);
+}
+
+.voice-orb-button {
+  border-radius: 999px;
+  transition-property: scale;
+  transition-duration: 150ms;
+}
+
+.voice-orb-button:enabled:active {
+  scale: 0.96;
+}
+
+.voice-orb-button:disabled {
+  cursor: default;
 }
 
 .mic-button {

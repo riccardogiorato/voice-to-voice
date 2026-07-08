@@ -2,8 +2,8 @@
 
 import {
   Cpu,
-  LoaderCircle,
   Mic,
+  MicOff,
   SlidersHorizontal,
   X,
 } from "lucide-react";
@@ -34,8 +34,8 @@ type ServerEvent =
 
 const phaseCopy: Record<Phase, { label: string; detail: string }> = {
   idle: {
-    label: "Tap to talk",
-    detail: "Ready",
+    label: "Tap the orb",
+    detail: "Start talking",
   },
   connecting: {
     label: "Connecting",
@@ -56,8 +56,10 @@ const phaseCopy: Record<Phase, { label: string; detail: string }> = {
 };
 
 const SPEECH_RMS_THRESHOLD = 0.018;
+const BARGE_IN_RMS_THRESHOLD = 0.045;
 const SPEECH_HOLD_MS = 360;
 const MIN_AUDIO_CHUNK_MS = 80;
+const PRE_ROLL_MS = 320;
 
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -66,6 +68,7 @@ export default function Home() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [error, setError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [muted, setMuted] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -81,13 +84,33 @@ export default function Home() {
   const micBufferSamplesRef = useRef(0);
   const lastSpeechAtRef = useRef(Number.NEGATIVE_INFINITY);
   const speechOpenRef = useRef(false);
+  const bargeInSentRef = useRef(false);
   const pcmLeftoverRef = useRef<Uint8Array | null>(null);
+  const conversationScrollRef = useRef<HTMLDivElement | null>(null);
+  const preRollRef = useRef<Float32Array[]>([]);
+  const preRollSamplesRef = useRef(0);
+  const noiseFloorRef = useRef(0.008);
+  const pendingPhaseRef = useRef<Phase | null>(null);
+  const mutedRef = useRef(false);
 
   const isActive = phase !== "idle";
-  const status = phaseCopy[phase];
+  const status =
+    muted && isActive
+      ? { label: "Muted", detail: "Tap the mic to resume" }
+      : phaseCopy[phase];
+
+  function toggleMute() {
+    const next = !mutedRef.current;
+    mutedRef.current = next;
+    setMuted(next);
+    if (next) resetMicGate();
+  }
 
   function updatePhase(nextPhase: Phase) {
     phaseRef.current = nextPhase;
+    if (nextPhase === "idle" || nextPhase === "listening") {
+      bargeInSentRef.current = false;
+    }
     setPhase(nextPhase);
   }
 
@@ -95,12 +118,6 @@ export default function Home() {
     phaseRef.current = phase;
   }, [phase]);
 
-  useEffect(() => {
-    return () => {
-      stopConversation();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   async function startConversation() {
     if (isActive) return;
@@ -108,6 +125,8 @@ export default function Home() {
     setError("");
     setPartial("");
     setAssistantDraft("");
+    mutedRef.current = false;
+    setMuted(false);
     updatePhase("connecting");
 
     try {
@@ -152,8 +171,10 @@ export default function Home() {
       };
 
       socket.onclose = () => {
+        const wasActive = phaseRef.current !== "idle";
         tearDownAudio();
         updatePhase("idle");
+        if (wasActive) setError("Session ended. Tap the mic to reconnect.");
       };
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not start the microphone.");
@@ -164,6 +185,15 @@ export default function Home() {
 
   function handleServerEvent(event: ServerEvent) {
     if (event.type === "state") {
+      if (
+        event.state === "listening" &&
+        audioContextRef.current &&
+        nextPlayTimeRef.current > audioContextRef.current.currentTime + 0.05
+      ) {
+        pendingPhaseRef.current = "listening";
+        return;
+      }
+      pendingPhaseRef.current = null;
       updatePhase(event.state);
       return;
     }
@@ -267,6 +297,13 @@ export default function Home() {
     setAssistantDraft("");
   }
 
+  useEffect(() => {
+    return () => {
+      stopConversation();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function tearDownAudio() {
     clearPlayback();
     workletRef.current?.disconnect();
@@ -289,6 +326,17 @@ export default function Home() {
     lastSpeechAtRef.current = Number.NEGATIVE_INFINITY;
     speechOpenRef.current = false;
     pcmLeftoverRef.current = null;
+    preRollRef.current = [];
+    preRollSamplesRef.current = 0;
+    noiseFloorRef.current = 0.008;
+    pendingPhaseRef.current = null;
+  }
+
+  function isAssistantAudioActive() {
+    if (playbackSourcesRef.current.length > 0) return true;
+    const audioContext = audioContextRef.current;
+    if (!audioContext) return false;
+    return nextPlayTimeRef.current > audioContext.currentTime;
   }
 
   function sendSpeechAudio(
@@ -298,15 +346,53 @@ export default function Home() {
     socket: WebSocket,
   ) {
     if (socket.readyState !== WebSocket.OPEN) return;
-    if (phaseRef.current !== "listening") {
+    if (mutedRef.current || phaseRef.current === "idle" || phaseRef.current === "connecting") {
       resetMicGate();
       return;
     }
 
+    if (isAssistantAudioActive() || phaseRef.current === "thinking" || phaseRef.current === "speaking") {
+      if (rms(input) < BARGE_IN_RMS_THRESHOLD) {
+        // Mic audio must not reach the server while the assistant is talking.
+        return;
+      }
+
+      if (!bargeInSentRef.current) {
+        socket.send(JSON.stringify({ type: "response.cancel" }));
+        clearPlayback();
+        setAssistantDraft("");
+        bargeInSentRef.current = true;
+      }
+    }
+
+    const level = rms(input);
+    const openThreshold = Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current * 3);
+
+    // eslint-disable-next-line react-hooks/purity -- runs in mic callbacks, never during render
     const now = performance.now();
-    if (rms(input) >= SPEECH_RMS_THRESHOLD) {
+    if (level >= openThreshold) {
+      // Pre-roll must lead the opening frame or speech onsets are clipped.
+      if (!speechOpenRef.current) {
+        micBufferRef.current.push(...preRollRef.current);
+        micBufferSamplesRef.current += preRollSamplesRef.current;
+        preRollRef.current = [];
+        preRollSamplesRef.current = 0;
+      }
       lastSpeechAtRef.current = now;
       speechOpenRef.current = true;
+    } else if (!speechOpenRef.current) {
+      preRollRef.current.push(new Float32Array(input));
+      preRollSamplesRef.current += input.length;
+      const maxPreRollSamples = Math.round(sampleRate * (PRE_ROLL_MS / 1000));
+      while (preRollSamplesRef.current > maxPreRollSamples) {
+        const oldest = preRollRef.current.shift();
+        if (!oldest) break;
+        preRollSamplesRef.current -= oldest.length;
+      }
+      noiseFloorRef.current = Math.min(
+        0.02,
+        Math.max(0.004, noiseFloorRef.current * 0.95 + level * 0.05),
+      );
     }
 
     const inSpeechTail = now - lastSpeechAtRef.current <= SPEECH_HOLD_MS;
@@ -335,6 +421,8 @@ export default function Home() {
     micBufferSamplesRef.current = 0;
     lastSpeechAtRef.current = Number.NEGATIVE_INFINITY;
     speechOpenRef.current = false;
+    preRollRef.current = [];
+    preRollSamplesRef.current = 0;
   }
 
   function flushSpeechAudio(socket: WebSocket, sampleRate: number) {
@@ -387,6 +475,10 @@ export default function Home() {
       playbackSourcesRef.current = playbackSourcesRef.current.filter(
         (item) => item !== source,
       );
+      if (pendingPhaseRef.current && !isAssistantAudioActive()) {
+        updatePhase(pendingPhaseRef.current);
+        pendingPhaseRef.current = null;
+      }
     };
   }
 
@@ -398,8 +490,13 @@ export default function Home() {
         : []),
     ];
 
-    return [...turns.slice(liveItems.length ? -2 : -3), ...liveItems].slice(-4);
+    return [...turns, ...liveItems].slice(-8);
   }, [assistantDraft, partial, turns]);
+
+  useEffect(() => {
+    const el = conversationScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [transcriptItems]);
 
   return (
     <main className="min-h-dvh overflow-hidden bg-[#faf9f6] text-[#050505]">
@@ -472,9 +569,18 @@ export default function Home() {
             ) : null}
 
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-5 pb-6">
-              <div className={`voice-orb voice-orb-${phase}`} aria-hidden>
-                <div className="voice-orb-core" />
-              </div>
+              <button
+                className="voice-orb-button"
+                type="button"
+                onClick={startConversation}
+                disabled={isActive}
+                aria-label="Start conversation"
+                title={isActive ? undefined : "Start conversation"}
+              >
+                <div className={`voice-orb voice-orb-${phase}`} aria-hidden>
+                  <div className="voice-orb-core" />
+                </div>
+              </button>
 
               <div className="rounded-full bg-white/38 px-4 py-2 text-center shadow-[0_0_0_1px_rgba(255,255,255,0.55),0_10px_28px_rgba(90,43,103,0.08)] backdrop-blur-xl">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b5a82]">
@@ -487,7 +593,11 @@ export default function Home() {
               <div className="conversation-stream">
                 <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-gradient-to-b from-[#fdfcf9]/80 to-transparent" />
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-gradient-to-t from-[#fdfcf9]/72 to-transparent" />
-                <div className="flex h-full flex-col justify-end gap-1.5 px-1 py-3">
+                <div
+                  ref={conversationScrollRef}
+                  className="max-h-[240px] overflow-y-auto overscroll-contain"
+                >
+                <div className="flex min-h-[120px] flex-col justify-end gap-1.5 px-1 py-3">
                   {transcriptItems.length === 0 ? (
                     <p className="self-center rounded-full bg-white/34 px-3 py-1.5 text-sm leading-5 text-[#6b5a82]/72 shadow-[0_0_0_1px_rgba(255,255,255,0.56)] backdrop-blur-xl">
                       Tap to start
@@ -495,7 +605,7 @@ export default function Home() {
                   ) : (
                     transcriptItems.map((turn, index) => (
                       <p
-                        className={`line-clamp-2 max-w-[86%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 shadow-[0_8px_22px_rgba(42,26,52,0.07)] transition-[opacity,filter,transform] duration-300 ease-out ${
+                        className={`max-w-[86%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 shadow-[0_8px_22px_rgba(42,26,52,0.07)] transition-[opacity,filter,transform] duration-300 ease-out ${
                           turn.role === "user"
                             ? "self-end bg-[#050505]/88 text-white backdrop-blur-xl"
                             : "self-start bg-white/48 text-[#33253d] shadow-[0_0_0_1px_rgba(255,255,255,0.5),0_8px_22px_rgba(42,26,52,0.06)] backdrop-blur-xl"
@@ -503,11 +613,7 @@ export default function Home() {
                         style={{
                           opacity: turn.live
                             ? 1
-                            : Math.max(0.2, 0.82 - (transcriptItems.length - index - 1) * 0.22),
-                          filter: turn.live
-                            ? "blur(0)"
-                            : `blur(${Math.min(1.4, (transcriptItems.length - index - 1) * 0.35)}px)`,
-                          transform: `translateY(${turn.live ? 0 : Math.max(-10, (index - transcriptItems.length + 1) * 3)}px)`,
+                            : Math.max(0.6, 0.95 - (transcriptItems.length - index - 1) * 0.1),
                         }}
                         key={`${turn.role}-${index}-${turn.text}`}
                       >
@@ -515,6 +621,7 @@ export default function Home() {
                       </p>
                     ))
                   )}
+                </div>
                 </div>
               </div>
 
@@ -524,22 +631,55 @@ export default function Home() {
                 </p>
               ) : null}
 
-              <div className="flex items-center justify-center">
-                <button
-                  className={`mic-button ${isActive ? "mic-button-active" : ""}`}
-                  type="button"
-                  aria-label={isActive ? "Stop voice demo" : "Start voice demo"}
-                  title={isActive ? "Stop" : "Start"}
-                  onClick={isActive ? stopConversation : startConversation}
-                >
-                  {phase === "connecting" || phase === "thinking" ? (
-                    <LoaderCircle className="size-7 animate-spin" aria-hidden />
-                  ) : isActive ? (
-                    <X className="size-7" aria-hidden />
-                  ) : (
-                    <Mic className="size-7" aria-hidden />
-                  )}
-                </button>
+              <div className="flex min-h-[64px] items-center justify-between px-1">
+                {isActive ? (
+                  <>
+                    <button
+                      className={`grid size-14 place-items-center rounded-full shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_8px_rgba(5,5,5,0.06)] transition-[background-color,box-shadow,scale,color] duration-150 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.12),0_3px_12px_rgba(5,5,5,0.08)] active:scale-[0.96] ${
+                        muted
+                          ? "bg-[#050505] text-white"
+                          : "bg-white text-[#050505]/80"
+                      }`}
+                      type="button"
+                      aria-pressed={muted}
+                      aria-label={muted ? "Unmute microphone" : "Mute microphone"}
+                      title={muted ? "Unmute" : "Mute"}
+                      onClick={toggleMute}
+                    >
+                      <span className="relative grid size-5 place-items-center">
+                        <Mic
+                          className={`absolute size-5 transition-[opacity,filter,scale] duration-200 ${
+                            muted
+                              ? "scale-[0.25] opacity-0 blur-[4px]"
+                              : "scale-100 opacity-100 blur-0"
+                          }`}
+                          aria-hidden
+                        />
+                        <MicOff
+                          className={`absolute size-5 transition-[opacity,filter,scale] duration-200 ${
+                            muted
+                              ? "scale-100 opacity-100 blur-0"
+                              : "scale-[0.25] opacity-0 blur-[4px]"
+                          }`}
+                          aria-hidden
+                        />
+                      </span>
+                    </button>
+                    <button
+                      className="grid size-14 place-items-center rounded-full bg-white text-[#050505]/80 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_8px_rgba(5,5,5,0.06)] transition-[box-shadow,scale] duration-150 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.12),0_3px_12px_rgba(5,5,5,0.08)] active:scale-[0.96]"
+                      type="button"
+                      aria-label="End conversation"
+                      title="End"
+                      onClick={stopConversation}
+                    >
+                      <X className="size-5" aria-hidden />
+                    </button>
+                  </>
+                ) : (
+                  <p className="mx-auto text-sm text-[#050505]/45">
+                    Tap the orb to start
+                  </p>
+                )}
               </div>
             </div>
           </div>
