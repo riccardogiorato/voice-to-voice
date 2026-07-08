@@ -10,7 +10,9 @@
     "bench:tts": "node scripts/benchmark-together-tts.mts",
     "bench:repair": "node scripts/benchmark-together-repair.mts",
     "bench:reply": "bun scripts/benchmark-together-reply.mts",
-    "test:voice": "node scripts/e2e-voice-latency.mjs"
+    "test": "bun test app/api/voice/*.test.ts",
+    "test:voice": "node scripts/e2e-voice-latency.mjs",
+    "deploy": "vercel --prod"
   },
   "dependencies": {
     "@vercel/functions": "^3.7.5",
@@ -23,6 +25,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/bun": "^1.3.14",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

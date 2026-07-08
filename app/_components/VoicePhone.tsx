@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Clipboard,
   Clock3,
   Cpu,
   Mic,
@@ -117,15 +118,25 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                       Nemotron 3 / Whisper
                     </dd>
                   </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <dt className="text-[#050505]/52">Response</dt>
-                    <dd className="font-medium text-[#050505]">Qwen2.5 7B</dd>
-                  </div>
+	                  <div className="flex items-center justify-between gap-4">
+	                    <dt className="text-[#050505]/52">Response</dt>
+	                    <dd className="text-right font-medium text-[#050505]">
+	                      GPT-OSS 20B / Nemotron Ultra
+	                    </dd>
+	                  </div>
                   <div className="flex items-center justify-between gap-4">
                     <dt className="text-[#050505]/52">Voice</dt>
                     <dd className="font-medium text-[#050505]">Sonic 3 / Kokoro</dd>
                   </div>
                 </dl>
+                <button
+                  className="mt-4 flex w-full items-center justify-center gap-2 rounded-full bg-[#050505] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(5,5,5,0.16)] transition-[scale,background-color] duration-150 active:scale-[0.98]"
+                  type="button"
+                  onClick={voice.copyDebugLog}
+                >
+                  <Clipboard className="size-4" aria-hidden />
+                  {voice.debugCopied ? "Copied session" : "Copy session log"}
+                </button>
               </div>
             ) : null}
 

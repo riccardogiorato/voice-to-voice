@@ -28,8 +28,8 @@ export const TTS_MODELS = uniqueTtsConfigs([
   { model: TTS_MODEL, voice: TTS_VOICE },
   { model: TTS_FALLBACK_MODEL, voice: TTS_FALLBACK_VOICE },
 ]);
-export const TRANSCRIPT_MERGE_WINDOW_MS = 1500;
-export const REPLY_GRACE_MS = 1000;
+export const TRANSCRIPT_MERGE_WINDOW_MS = 4000;
+export const REPLY_GRACE_MS = 1700;
 export const TRANSCRIPT_REPAIR_TIMEOUT_MS = 2500;
 const GHOST_TRANSCRIPTS = new Set([
   "you",

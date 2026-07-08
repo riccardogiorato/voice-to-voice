@@ -81,26 +81,29 @@ async function answerWithModel(
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const allowTools = round < MAX_TOOL_ROUNDS && Boolean(process.env.EXA_API_KEY);
+    const roundContent: string[] = [];
     const result = await streamTogetherChat({
       model,
       messages,
       signal,
       tools: allowTools ? AVAILABLE_TOOLS : undefined,
       streamContent: (delta) => {
-        finalContent += delta;
-        onDelta(delta);
+        if (allowTools) {
+          roundContent.push(delta);
+          return;
+        }
+        emitFinalDelta(delta);
       },
     });
 
     if (signal.aborted) throw new Error("Reply cancelled.");
 
     if (result.toolCalls.length === 0) {
+      if (allowTools && roundContent.length > 0) {
+        emitFinalDelta(roundContent.join(""));
+      }
       if (!finalContent.trim()) throw new Error("Reply model returned no content.");
       return finalContent.trim();
-    }
-
-    if (finalContent.trim()) {
-      throw new Error("Reply model mixed tool calls with user-visible text.");
     }
 
     messages.push({
@@ -120,6 +123,11 @@ async function answerWithModel(
   }
 
   throw new Error("Reply model did not produce a final answer after tool use.");
+
+  function emitFinalDelta(delta: string) {
+    finalContent += delta;
+    onDelta(delta);
+  }
 }
 
 async function streamTogetherChat({

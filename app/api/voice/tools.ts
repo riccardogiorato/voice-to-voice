@@ -39,11 +39,24 @@ export const AVAILABLE_TOOLS = [WEB_SEARCH_TOOL] as const;
 const WEB_SEARCH_TIMEOUT_MS = 3500;
 
 export async function runToolCall(toolCall: TogetherToolCall, signal: AbortSignal) {
+  if (toolCallRunnerForTest) return toolCallRunnerForTest(toolCall, signal);
   if (toolCall.function.name !== "web_search") {
     return JSON.stringify({ error: `Unknown tool: ${toolCall.function.name}` });
   }
 
   return runWebSearch(toolCall, signal);
+}
+
+let toolCallRunnerForTest:
+  | ((toolCall: TogetherToolCall, signal: AbortSignal) => Promise<string> | string)
+  | null = null;
+
+export function setToolCallRunnerForTest(
+  runner:
+    | ((toolCall: TogetherToolCall, signal: AbortSignal) => Promise<string> | string)
+    | null,
+) {
+  toolCallRunnerForTest = runner;
 }
 
 async function runWebSearch(toolCall: TogetherToolCall, signal: AbortSignal) {

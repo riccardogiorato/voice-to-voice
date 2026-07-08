@@ -25,6 +25,13 @@ type TranscriptItem = Turn & {
   live?: boolean;
 };
 
+type DebugEntry = {
+  at: string;
+  direction: "client" | "server" | "system";
+  type: string;
+  payload?: unknown;
+};
+
 type PartialTranscript = {
   text: string;
   baseText?: string;
@@ -40,6 +47,15 @@ type ServerEvent =
   | { type: "audio.done" }
   | { type: "audio.clear" }
   | { type: "error"; message: string };
+
+type ClientEvent =
+  | { type: "conversation.start"; history?: Turn[] }
+  | { type: "conversation.reset" }
+  | { type: "conversation.stop" }
+  | { type: "response.cancel" }
+  | { type: "speech.started" }
+  | { type: "audio.commit" }
+  | { type: "audio.input"; audio: string; sampleRate: number };
 
 const SPEECH_RMS_THRESHOLD = 0.024;
 const BARGE_IN_RMS_THRESHOLD = 0.12;
@@ -61,6 +77,8 @@ export function useVoiceConversation() {
   const [error, setError] = useState("");
   const [muted, setMuted] = useState(false);
   const [micActivity, setMicActivity] = useState(0);
+  const [debugCopied, setDebugCopied] = useState(false);
+  const [debugVersion, setDebugVersion] = useState(0);
 
   const socketRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -97,6 +115,8 @@ export function useVoiceConversation() {
   const speechOpenedAtRef = useRef(Number.NEGATIVE_INFINITY);
   const tenVadRef = useRef<BrowserTenVad | null>(null);
   const tenVadPromiseRef = useRef<Promise<BrowserTenVad | null> | null>(null);
+  const debugLogRef = useRef<DebugEntry[]>([]);
+  const lastDebugPaintRef = useRef(0);
 
   const isActive = phase !== "idle";
 
@@ -106,9 +126,26 @@ export function useVoiceConversation() {
     setPartial(null);
     setAssistantDraft("");
     setError("");
+    clearDebugLog();
     if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ type: "conversation.reset" }));
+      sendClientEvent({ type: "conversation.reset" });
     }
+  }
+
+  async function copyDebugLog() {
+    const snapshot = {
+      copiedAt: new Date().toISOString(),
+      phase: phaseRef.current,
+      muted: mutedRef.current,
+      turns,
+      partial,
+      assistantDraft,
+      entries: debugLogRef.current,
+    };
+
+    await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2));
+    setDebugCopied(true);
+    window.setTimeout(() => setDebugCopied(false), 1400);
   }
 
   function toggleMute() {
@@ -140,6 +177,7 @@ export function useVoiceConversation() {
   async function startConversation() {
     if (isActive) return;
 
+    clearDebugLog();
     void ensureTenVad();
     setError("");
     setPartial(null);
@@ -167,9 +205,8 @@ export function useVoiceConversation() {
       socketRef.current = socket;
 
       socket.onopen = async () => {
-        socket.send(
-          JSON.stringify({ type: "conversation.start", history: turns }),
-        );
+        appendDebug("system", "socket.open", { url: getVoiceSocketUrl() });
+        sendClientEvent({ type: "conversation.start", history: turns });
         try {
           await wireMicrophone(audioContext, stream, socket);
         } catch (reason) {
@@ -187,11 +224,13 @@ export function useVoiceConversation() {
       };
 
       socket.onerror = () => {
+        appendDebug("system", "socket.error");
         setError("Voice socket failed. Try a deployed Vercel URL if local dev cannot upgrade WebSockets.");
         updatePhase("idle");
       };
 
       socket.onclose = () => {
+        appendDebug("system", "socket.close");
         const wasActive = phaseRef.current !== "idle";
         tearDownAudio();
         updatePhase("idle");
@@ -205,6 +244,8 @@ export function useVoiceConversation() {
   }
 
   function handleServerEvent(event: ServerEvent) {
+    appendDebug("server", event.type, event);
+
     if (event.type === "state") {
       deferPhaseUntilPlayback(event.state);
       return;
@@ -325,7 +366,7 @@ export function useVoiceConversation() {
   }
 
   function stopConversation() {
-    socketRef.current?.send(JSON.stringify({ type: "conversation.stop" }));
+    sendClientEvent({ type: "conversation.stop" });
     socketRef.current?.close();
     socketRef.current = null;
     tearDownAudio();
@@ -424,7 +465,7 @@ export function useVoiceConversation() {
       }
 
       if (!bargeInSentRef.current) {
-        socket.send(JSON.stringify({ type: "response.cancel" }));
+        sendClientEvent({ type: "response.cancel" }, socket);
         clearPlayback();
         setAssistantDraft("");
         bargeInSentRef.current = true;
@@ -449,7 +490,7 @@ export function useVoiceConversation() {
     if (hasSpeech) {
       // Pre-roll must lead the opening frame or speech onsets are clipped.
       if (!speechOpenRef.current) {
-        socket.send(JSON.stringify({ type: "speech.started" }));
+        sendClientEvent({ type: "speech.started" }, socket);
         micBufferRef.current.push(...preRollRef.current);
         micBufferSamplesRef.current += preRollSamplesRef.current;
         preRollRef.current = [];
@@ -480,7 +521,7 @@ export function useVoiceConversation() {
       if (speechOpenRef.current) {
         if (speechDuration >= MIN_SPEECH_MS) {
           flushSpeechAudio(socket, sampleRate);
-          socket.send(JSON.stringify({ type: "audio.commit" }));
+          sendClientEvent({ type: "audio.commit" }, socket);
         }
         speechOpenRef.current = false;
       }
@@ -517,13 +558,50 @@ export function useVoiceConversation() {
     micBufferRef.current = [];
     micBufferSamplesRef.current = 0;
 
-    socket.send(
-      JSON.stringify({
+    sendClientEvent(
+      {
         type: "audio.input",
         audio: float32ToBase64(chunk),
         sampleRate,
-      }),
+      },
+      socket,
     );
+  }
+
+  function sendClientEvent(event: ClientEvent, socket = socketRef.current) {
+    appendDebug("client", event.type, event);
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(event));
+    }
+  }
+
+  function appendDebug(
+    direction: DebugEntry["direction"],
+    type: string,
+    payload?: unknown,
+  ) {
+    const entry: DebugEntry = {
+      at: new Date().toISOString(),
+      direction,
+      type,
+      ...(payload === undefined ? {} : { payload: sanitizeDebugPayload(payload) }),
+    };
+    debugLogRef.current = [...debugLogRef.current.slice(-299), entry];
+    if (type !== "audio.input") {
+      console.debug("[voice-debug]", entry);
+    }
+
+    const now = performance.now();
+    if (now - lastDebugPaintRef.current < 250) return;
+    lastDebugPaintRef.current = now;
+    setDebugVersion((version) => version + 1);
+  }
+
+  function clearDebugLog() {
+    debugLogRef.current = [];
+    lastDebugPaintRef.current = 0;
+    setDebugCopied(false);
+    setDebugVersion((version) => version + 1);
   }
 
   function clearPlayback() {
@@ -750,6 +828,10 @@ export function useVoiceConversation() {
     toggleMute,
     transcriptItems,
     turns,
+    copyDebugLog,
+    debugCopied,
+    debugEntries: debugLogRef.current,
+    debugVersion,
   };
 }
 
@@ -788,4 +870,21 @@ function normalizeTranscriptText(text: string) {
 
 function isDisplayableTranscriptText(text: string) {
   return /[\p{L}\p{N}]/u.test(text);
+}
+
+function sanitizeDebugPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object") return payload;
+  if (Array.isArray(payload)) return payload.map(sanitizeDebugPayload);
+
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (key === "audio" && typeof value === "string") {
+      output[key] = `[base64:${value.length}]`;
+    } else if (key === "history" && Array.isArray(value)) {
+      output[key] = value.map(sanitizeDebugPayload);
+    } else {
+      output[key] = sanitizeDebugPayload(value);
+    }
+  }
+  return output;
 }
