@@ -14,14 +14,14 @@ import {
   rms,
 } from "@/app/_lib/client-audio";
 
-export type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
+type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 
-export type Turn = {
+type Turn = {
   role: "user" | "assistant";
   text: string;
 };
 
-export type TranscriptItem = Turn & {
+type TranscriptItem = Turn & {
   live?: boolean;
 };
 

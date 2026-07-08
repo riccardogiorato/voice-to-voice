@@ -1,8 +1,8 @@
-export const STT_MODEL = envOrDefault(
+const STT_MODEL = envOrDefault(
   "TOGETHER_STT_MODEL",
   "nvidia/nemotron-3-asr-streaming-0.6b",
 );
-export const STT_FALLBACK_MODEL = envOrDefault(
+const STT_FALLBACK_MODEL = envOrDefault(
   "TOGETHER_STT_FALLBACK_MODEL",
   "openai/whisper-large-v3",
 );
@@ -10,17 +10,17 @@ export const CHAT_MODEL = envOrDefault(
   "TOGETHER_CHAT_MODEL",
   "Qwen/Qwen2.5-7B-Instruct-Turbo",
 );
-export const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "canopylabs/orpheus-3b-0.1-ft");
-export const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "tara");
-export const TTS_FALLBACK_MODEL = envOrDefault("TOGETHER_TTS_FALLBACK_MODEL", "hexgrad/Kokoro-82M");
-export const TTS_FALLBACK_VOICE = envOrDefault("TOGETHER_TTS_FALLBACK_VOICE", "af_heart");
+const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "canopylabs/orpheus-3b-0.1-ft");
+const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "tara");
+const TTS_FALLBACK_MODEL = envOrDefault("TOGETHER_TTS_FALLBACK_MODEL", "hexgrad/Kokoro-82M");
+const TTS_FALLBACK_VOICE = envOrDefault("TOGETHER_TTS_FALLBACK_VOICE", "af_heart");
 export const STT_MODELS = uniqueNonEmpty([STT_MODEL, STT_FALLBACK_MODEL]);
 export const TTS_MODELS = uniqueTtsConfigs([
   { model: TTS_MODEL, voice: TTS_VOICE },
   { model: TTS_FALLBACK_MODEL, voice: TTS_FALLBACK_VOICE },
 ]);
 export const TRANSCRIPT_MERGE_WINDOW_MS = 1500;
-export const GHOST_TRANSCRIPTS = new Set([
+const GHOST_TRANSCRIPTS = new Set([
   "you",
   "thank you",
   "thanks for watching",
@@ -78,16 +78,16 @@ export function isAllowedOrigin(request: Request) {
   );
 }
 
-export function envOrDefault(name: string, fallback: string) {
+function envOrDefault(name: string, fallback: string) {
   const value = process.env[name]?.trim();
   return value && value.length > 0 ? value : fallback;
 }
 
-export function uniqueNonEmpty(values: string[]) {
+function uniqueNonEmpty(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
-export function uniqueTtsConfigs(configs: { model: string; voice: string }[]) {
+function uniqueTtsConfigs(configs: { model: string; voice: string }[]) {
   const seen = new Set<string>();
   return configs.filter((config) => {
     const model = config.model.trim();
