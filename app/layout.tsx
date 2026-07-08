@@ -20,8 +20,8 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "Together Voice Demo",
-  description: "A tiny voice-to-voice demo using Together AI models.",
+  title: "Together Voice",
+  description: "Voice-to-voice AI demo running entirely on Together AI models.",
 };
 
 export default function RootLayout({

@@ -164,6 +164,14 @@ button {
   mask-image: linear-gradient(to bottom, transparent 0, black 18%, black 88%, transparent 100%);
 }
 
+.conversation-scroll {
+  scrollbar-width: none;
+}
+
+.conversation-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 .voice-orb-button {
   border-radius: 999px;
   transition-property: scale;

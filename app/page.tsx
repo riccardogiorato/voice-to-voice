@@ -507,14 +507,20 @@ export default function Home() {
           <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(198,168,244,0.18),rgba(255,255,255,0)_24%),radial-gradient(circle_at_100%_5%,rgba(239,44,193,0.12),transparent_24%),radial-gradient(circle_at_0%_95%,rgba(252,76,2,0.1),transparent_28%)]" />
 
           <header className="relative z-10 flex items-center justify-between px-7 pt-7 text-sm">
-            <Image
-              className="h-6 w-[110px] object-contain object-left"
-              src="/together-logo.svg"
-              alt="Together AI"
-              width={110}
-              height={24}
-              priority
-            />
+            <div className="flex items-center gap-2.5">
+              <Image
+                className="h-6 w-[110px] object-contain object-left"
+                src="/together-logo.svg"
+                alt="Together AI"
+                width={110}
+                height={24}
+                priority
+              />
+              <span className="h-4 w-px bg-[#050505]/14" aria-hidden />
+              <span className="text-sm font-semibold tracking-tight text-[#050505]/78">
+                Voice
+              </span>
+            </div>
             <button
               className="grid size-10 place-items-center rounded-full bg-white text-[#050505]/70 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_8px_rgba(5,5,5,0.06)] transition-[box-shadow,scale] duration-150 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.12),0_3px_12px_rgba(5,5,5,0.08)] active:scale-[0.96]"
               type="button"
@@ -590,20 +596,16 @@ export default function Home() {
             </div>
 
             <div className="space-y-4">
+              {transcriptItems.length > 0 ? (
               <div className="conversation-stream">
                 <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-gradient-to-b from-[#fdfcf9]/80 to-transparent" />
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-gradient-to-t from-[#fdfcf9]/72 to-transparent" />
                 <div
                   ref={conversationScrollRef}
-                  className="max-h-[240px] overflow-y-auto overscroll-contain"
+                  className="conversation-scroll max-h-[240px] overflow-y-auto overscroll-contain"
                 >
                 <div className="flex min-h-[120px] flex-col justify-end gap-1.5 px-1 py-3">
-                  {transcriptItems.length === 0 ? (
-                    <p className="self-center rounded-full bg-white/34 px-3 py-1.5 text-sm leading-5 text-[#6b5a82]/72 shadow-[0_0_0_1px_rgba(255,255,255,0.56)] backdrop-blur-xl">
-                      Tap to start
-                    </p>
-                  ) : (
-                    transcriptItems.map((turn, index) => (
+                  {transcriptItems.map((turn, index) => (
                       <p
                         className={`max-w-[86%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 shadow-[0_8px_22px_rgba(42,26,52,0.07)] transition-[opacity,filter,transform] duration-300 ease-out ${
                           turn.role === "user"
@@ -619,11 +621,11 @@ export default function Home() {
                       >
                         {turn.text}
                       </p>
-                    ))
-                  )}
+                  ))}
                 </div>
                 </div>
               </div>
+              ) : null}
 
               {error ? (
                 <p className="rounded-2xl bg-[#fff1ec] px-4 py-3 text-sm text-[#9a2c07] shadow-[0_0_0_1px_rgba(252,76,2,0.18)]">
@@ -675,11 +677,7 @@ export default function Home() {
                       <X className="size-5" aria-hidden />
                     </button>
                   </>
-                ) : (
-                  <p className="mx-auto text-sm text-[#050505]/45">
-                    Tap the orb to start
-                  </p>
-                )}
+                ) : null}
               </div>
             </div>
           </div>
