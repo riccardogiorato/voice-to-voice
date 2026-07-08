@@ -15,10 +15,7 @@ export const TRANSCRIPT_REPAIR_MODEL = envOrDefault(
   "Qwen/Qwen3.5-9B",
 );
 const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "cartesia/sonic-3");
-const TTS_VOICE = envOrDefault(
-  "TOGETHER_TTS_VOICE",
-  "47c38ca4-5f35-497b-b1a3-415245fb35e1",
-);
+const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "nonfiction man");
 const TTS_FALLBACK_MODEL = envOrDefault("TOGETHER_TTS_FALLBACK_MODEL", "hexgrad/Kokoro-82M");
 const TTS_FALLBACK_VOICE = envOrDefault("TOGETHER_TTS_FALLBACK_VOICE", "af_heart");
 export const STT_MODELS = uniqueNonEmpty([STT_MODEL, STT_FALLBACK_MODEL]);

@@ -28,7 +28,7 @@ TOGETHER_STT_MODEL=nvidia/nemotron-3-asr-streaming-0.6b
 TOGETHER_STT_FALLBACK_MODEL=openai/whisper-large-v3
 TOGETHER_CHAT_MODEL=Qwen/Qwen2.5-7B-Instruct-Turbo
 TOGETHER_TTS_MODEL=cartesia/sonic-3
-TOGETHER_TTS_VOICE=47c38ca4-5f35-497b-b1a3-415245fb35e1
+TOGETHER_TTS_VOICE=nonfiction man
 TOGETHER_TTS_FALLBACK_MODEL=hexgrad/Kokoro-82M
 TOGETHER_TTS_FALLBACK_VOICE=af_heart
 ```
