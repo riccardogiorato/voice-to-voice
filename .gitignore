@@ -47,3 +47,7 @@ next-env.d.ts
 /bench-results/
 reflection.md
 ideas.md
+
+
+session-export-1783507817308/*
+test-fixtures/*

@@ -1,0 +1,696 @@
+#!/usr/bin/env node
+// scripts/benchmark-together-stt.mjs
+//
+// Realtime speech-to-text latency + accuracy benchmark for Together realtime
+// transcription models over the WebSocket API
+// (wss://api.together.ai/v1/realtime?intent=transcription&model=...).
+//
+//   * Synthesizes three short utterances once via Together REST TTS
+//     (hexgrad/Kokoro-82M, voice af_heart, response_format raw @ 24 kHz s16le),
+//     resamples 24 kHz -> 16 kHz with linear interpolation, and saves them as
+//     test-fixtures/stt-bench-1.pcm, stt-bench-2.pcm, stt-bench-3.pcm (skipped
+//     if the file already exists).
+//   * For every model x fixture x run, opens a transcription websocket with
+//     turn_detection=none, streams the fixture as 80 ms (2560-byte) base64 s16le
+//     chunks paced in real time, then sends input_audio_buffer.commit and
+//     measures commit -> conversation.item.input_audio_transcription.completed
+//     latency (commitToFinalMs) plus time-to-first-delta (firstDeltaMs, may be
+//     null with turn_detection=none) and the per-run transcript.
+//   * Computes word-level WER against the known ground truth with an in-script
+//     Levenshtein implementation (lowercase, strip punctuation, split on
+//     whitespace; WER = distance / referenceWordCount).
+//   * Per-connection hard timeout: 30 s. Any run failure (socket error,
+//     timeout, transcription.failed, or a generic {type:'error'} event) is
+//     recorded and the benchmark continues with the next run; nothing aborts
+//     the whole benchmark. The socket is closed cleanly after each run.
+//   * Prints per-model aligned column tables (per run + a summary line) and a
+//     final cross-model summary table, then writes full JSON results to
+//     bench-results/together-stt-<timestamp>.json (ISO timestamp with ':' and
+//     '.' replaced by '-'), same meta style as benchmark-together-chat.mjs.
+//
+// Only external dependency is 'ws' (already installed). Everything else is a
+// node: builtin. Requires Node 20+ (global fetch, performance, Buffer, ws).
+//
+// Usage:
+//   TOGETHER_API_KEY=... node scripts/benchmark-together-stt.mjs
+//   node scripts/benchmark-together-stt.mjs --models "openai/whisper-large-v3" --runs 3
+//   STT_BENCH_MODELS="a,b" node scripts/benchmark-together-stt.mjs --runs 5
+//
+// Reads TOGETHER_API_KEY from process.env. Also tries to load ./.env when the
+// key is not already exported, so the project's gitignored .env works out of
+// the box. Models default to ['openai/whisper-large-v3']; override with
+// --models (wins) or the STT_BENCH_MODELS env var (comma-separated).
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import WebSocket from 'ws';
+
+// ---------- constants ----------
+
+// Default realtime transcription model catalog (override with --models /
+// STT_BENCH_MODELS).
+const DEFAULT_MODELS = ['openai/whisper-large-v3'];
+
+const WS_BASE = 'wss://api.together.ai/v1/realtime';
+const INTENT = 'transcription';
+const INPUT_AUDIO_FORMAT = 'pcm_s16le_16000';
+const TURN_DETECTION = 'none';
+
+const CONN_TIMEOUT_MS = 30_000; // per-connection overall timeout
+
+// Together REST TTS, used to synthesize fixtures (mirrors
+// scripts/e2e-voice-latency.mjs ensureFixture()). Kokoro-82M always returns
+// 24 kHz s16le mono PCM regardless of the requested sample_rate, so we request
+// 24000 and resample down to 16 kHz.
+const TTS_ENDPOINT = 'https://api.together.ai/v1/audio/speech';
+const TTS_MODEL = 'hexgrad/Kokoro-82M';
+const TTS_VOICE = 'af_heart';
+const TTS_SYNTH_SAMPLE_RATE = 24000;
+const FIXTURE_SAMPLE_RATE = 16000;
+
+// 80 ms of audio at 16 kHz, 16-bit = 16000 * 2 * 0.08 = 2560 bytes.
+const CHUNK_BYTES = 2560;
+const CHUNK_INTERVAL_MS = 80; // stream chunks in real time
+
+const OUT_DIR = 'bench-results';
+
+// Three utterances with known ground-truth text.
+const FIXTURES = [
+  { name: 'stt-bench-1.pcm', text: 'Hello! How are you doing today?' },
+  { name: 'stt-bench-2.pcm', text: 'What is the fastest open source language model right now?' },
+  { name: 'stt-bench-3.pcm', text: 'Please summarize the plot of Romeo and Juliet in one sentence.' },
+];
+
+// ---------- dotenv loader (matches scripts/benchmark-together-chat.mjs) ----------
+
+function loadDotEnv(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return;
+  }
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (!(key in process.env)) process.env[key] = val;
+  }
+}
+
+// ---------- CLI ----------
+
+function parseArgs(argv) {
+  const a = { models: null, runs: 3, help: false };
+  const rest = [...argv];
+  const need = (name) => {
+    const v = rest.shift();
+    if (v === undefined) throw new Error(`Missing value for ${name}`);
+    return v;
+  };
+  while (rest.length) {
+    const arg = rest.shift();
+    switch (arg) {
+      case '--models':
+        a.models = need('--models')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        break;
+      case '--runs':
+        a.runs = parseInt(need('--runs'), 10);
+        break;
+      case '-h':
+      case '--help':
+        a.help = true;
+        break;
+      default:
+        throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+  return a;
+}
+
+function printHelp() {
+  console.log(`benchmark-together-stt.mjs - Together realtime STT latency + accuracy benchmark
+
+Usage:
+  node scripts/benchmark-together-stt.mjs [options]
+
+Options:
+  --models "a,b,c"   Comma-separated realtime transcription model ids to benchmark
+                     (default: ${DEFAULT_MODELS.join(',')}). Also set via the
+                     STT_BENCH_MODELS env var; --models wins.
+  --runs N           Repetitions per model x fixture (default 3)
+  -h, --help         Show this help
+
+Env:
+  TOGETHER_API_KEY   Required. Also auto-loaded from ./.env if not exported.
+  STT_BENCH_MODELS   Comma-separated model ids (used only if --models is not given).
+
+Notes:
+  Streams each fixture as 80 ms (2560-byte) base64 s16le chunks at real-time
+  pace over a transcription websocket with turn_detection=none, then commits.
+  Measures commit -> transcription.completed latency and word-level WER vs the
+  known ground truth. Per-connection timeout is 30 s. Run failures are recorded
+  and never abort the whole benchmark. JSON results go to
+  ${OUT_DIR}/together-stt-<timestamp>.json.
+`);
+}
+
+// ---------- formatting helpers (aligned-column style of the chat benchmark) ----------
+
+function median(arr) {
+  if (!arr.length) return null;
+  const s = [...arr].sort((x, y) => x - y);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+function mean(arr) {
+  if (!arr.length) return null;
+  return arr.reduce((x, y) => x + y, 0) / arr.length;
+}
+
+const fmtMs = (v) => (v == null ? '-' : Math.round(v).toLocaleString('en-US'));
+const fmtPct = (v) => (v == null ? '-' : `${(v * 100).toFixed(1)}%`);
+
+function trunc(s, n) {
+  s = String(s ?? '');
+  return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+
+function printRunsTable(rows) {
+  const cols = ['fixture', 'run', 'commitToFinalMs', 'WER', 'transcript'];
+  const data = rows.map((r) => [
+    r.fixture,
+    String(r.run),
+    r.status === 'ok' ? fmtMs(r.commitToFinalMs) : 'ERR',
+    r.status === 'ok' && r.wer != null ? fmtPct(r.wer) : '-',
+    r.status === 'ok' ? trunc(r.transcript || '', 60) : trunc(r.error || 'error', 60),
+  ]);
+  const widths = cols.map((c, i) =>
+    Math.max(c.length, ...data.map((r) => r[i].length)),
+  );
+  const pad = (cells) =>
+    cells.map((c, i) => String(c).padEnd(widths[i], ' ')).join('  ');
+  const sep = widths.map((w) => '-'.repeat(w)).join('  ');
+  console.log(pad(cols));
+  console.log(sep);
+  for (const r of data) console.log(pad(r));
+}
+
+function printSummaryTable(summaries) {
+  const cols = ['Model', 'OK', 'Median commitToFinal(ms)', 'Mean WER'];
+  const data = summaries.map((s) => [
+    trunc(s.model, 46),
+    `${s.ok}/${s.runs}`,
+    s.ok > 0 ? fmtMs(s.medianCommitToFinalMs) : 'ERR',
+    s.ok > 0 ? fmtPct(s.meanWer) : '-',
+  ]);
+  const widths = cols.map((c, i) =>
+    Math.max(c.length, ...data.map((r) => r[i].length)),
+  );
+  const pad = (cells) =>
+    cells.map((c, i) => String(c).padEnd(widths[i], ' ')).join('  ');
+  const sep = widths.map((w) => '-'.repeat(w)).join('  ');
+  console.log(pad(cols));
+  console.log(sep);
+  for (const r of data) console.log(pad(r));
+  for (const s of summaries.filter((x) => x.errors > 0)) {
+    console.log(`  ! ${s.model}: ${s.errors}/${s.runs} failed - ${trunc(s.lastError || '', 120)}`);
+  }
+}
+
+// ---------- WER ----------
+
+// Lowercase, strip punctuation (remove non-alphanumeric / non-space chars),
+// collapse whitespace, split into words.
+function normalizeWords(text) {
+  const s = String(text ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s.length ? s.split(' ') : [];
+}
+
+// Word-level Levenshtein distance between two word arrays (two rolling rows).
+function levenshtein(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = new Array(n + 1);
+  for (let j = 0; j <= n; j += 1) prev[j] = j;
+  for (let i = 1; i <= m; i += 1) {
+    const cur = new Array(n + 1);
+    cur[0] = i;
+    for (let j = 1; j <= n; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+
+// WER = word-level edit distance / reference word count. Returns null when the
+// reference has no words (would divide by zero).
+function computeWer(reference, hypothesis) {
+  const ref = normalizeWords(reference);
+  const hyp = normalizeWords(hypothesis);
+  if (ref.length === 0) return hyp.length === 0 ? 0 : null;
+  return levenshtein(ref, hyp) / ref.length;
+}
+
+// ---------- fixture synthesis ----------
+
+// Synthesize one 16 kHz s16le mono PCM fixture via Together REST TTS, skipping
+// if the file already exists. Kokoro-82M always returns 24 kHz s16le mono PCM
+// regardless of the requested sample_rate, so we request 24000 and resample the
+// 24 kHz response down to 16 kHz with linear interpolation. The resample block
+// below is duplicated verbatim from ensureFixture() in
+// scripts/e2e-voice-latency.mjs (do not import from it or modify it).
+async function ensureFixture(fixture, apiKey) {
+  const fixturePath = path.join('test-fixtures', fixture.name);
+  if (fs.existsSync(fixturePath)) return;
+
+  fs.mkdirSync(path.dirname(fixturePath), { recursive: true });
+
+  const res = await fetch(TTS_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: TTS_MODEL,
+      input: fixture.text,
+      voice: TTS_VOICE,
+      response_format: 'raw',
+      sample_rate: TTS_SYNTH_SAMPLE_RATE,
+    }),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(
+      `TTS synthesis failed for ${fixture.name} (HTTP ${res.status}): ${detail.slice(0, 300)}`,
+    );
+  }
+
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (bytes.length === 0) throw new Error(`TTS synthesis returned no audio bytes for ${fixture.name}`);
+
+  // ---- duplicated resample code (24 kHz s16le -> 16 kHz s16le) ----
+  const inputSamples = Math.floor(bytes.length / 2);
+  const input = new Float32Array(inputSamples);
+  for (let i = 0; i < inputSamples; i += 1) {
+    input[i] = bytes.readInt16LE(i * 2) / 32768;
+  }
+
+  const ratio = TTS_SYNTH_SAMPLE_RATE / FIXTURE_SAMPLE_RATE; // 1.5
+  const outputLength = Math.max(1, Math.round(input.length / ratio));
+  const resampled = new Float32Array(outputLength);
+  for (let i = 0; i < outputLength; i += 1) {
+    const position = i * ratio;
+    const before = Math.floor(position);
+    const after = Math.min(before + 1, input.length - 1);
+    const weight = position - before;
+    resampled[i] = input[before] * (1 - weight) + input[after] * weight;
+  }
+
+  const pcm16 = Buffer.alloc(outputLength * 2);
+  for (let i = 0; i < outputLength; i += 1) {
+    const sample = Math.max(-1, Math.min(1, resampled[i]));
+    const value = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    pcm16.writeInt16LE(value, i * 2);
+  }
+  // ---- end duplicated resample code ----
+
+  fs.writeFileSync(fixturePath, pcm16);
+  console.log(
+    `Synthesized fixture: ${fixturePath} (${bytes.length} bytes -> resampled ${pcm16.length} bytes @ ${FIXTURE_SAMPLE_RATE} Hz)`,
+  );
+}
+
+// Split the 16 kHz s16le fixture buffer into 80 ms (2560-byte) base64 chunks.
+function buildChunks(pcmBuffer) {
+  const chunks = [];
+  for (let off = 0; off < pcmBuffer.length; off += CHUNK_BYTES) {
+    const end = Math.min(off + CHUNK_BYTES, pcmBuffer.length);
+    chunks.push(pcmBuffer.subarray(off, end).toString('base64'));
+  }
+  return chunks;
+}
+
+// ---------- per-run websocket turn ----------
+
+function buildResult(model, fixture, fixtureIndex, runIndex, state, runStart) {
+  const totalElapsedMs = performance.now() - runStart;
+  const commitToFinalMs =
+    state.tFinal != null && state.tCommit != null ? state.tFinal - state.tCommit : null;
+  const firstDeltaMs =
+    state.tFirstDelta != null && state.tStreamStart != null
+      ? state.tFirstDelta - state.tStreamStart
+      : null;
+  const status = state.status;
+  const transcript = state.transcript || '';
+  const wer = status === 'ok' ? computeWer(fixture.text, transcript) : null;
+  return {
+    model,
+    fixtureIndex,
+    fixture: fixture.name,
+    groundTruth: fixture.text,
+    run: runIndex,
+    status,
+    commitToFinalMs,
+    firstDeltaMs,
+    transcript,
+    wer,
+    error: status === 'error' ? state.error || 'unknown error' : null,
+    totalElapsedMs,
+  };
+}
+
+// Open a transcription websocket, stream the fixture, commit, and resolve with
+// a result object. Any failure (socket error, 30 s timeout, transcription.failed,
+// generic {type:'error'}) is captured as status:'error' and the benchmark
+// continues; the socket is closed cleanly before resolving.
+function runOne(model, fixture, fixtureIndex, runIndex, apiKey) {
+  return new Promise((resolve) => {
+    const wsUrl =
+      `${WS_BASE}?intent=${INTENT}` +
+      `&model=${encodeURIComponent(model)}` +
+      `&input_audio_format=${INPUT_AUDIO_FORMAT}` +
+      `&turn_detection=${TURN_DETECTION}`;
+    const chunks = fixture.chunks;
+    const runStart = performance.now();
+
+    const state = {
+      finished: false,
+      status: 'error',
+      error: null,
+      transcript: '',
+      tStreamStart: null,
+      tCommit: null,
+      tFirstDelta: null,
+      tFinal: null,
+    };
+
+    const ws = new WebSocket(wsUrl, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    let timer = null;
+
+    const finish = (status, error) => {
+      if (state.finished) return;
+      state.finished = true;
+      state.status = status;
+      if (error) state.error = error;
+      clearTimeout(timer);
+      try {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close(1000, 'client done');
+        }
+      } catch {
+        /* socket already gone */
+      }
+      // Give the close frame a moment to flush before resolving.
+      setTimeout(() => resolve(buildResult(model, fixture, fixtureIndex, runIndex, state, runStart)), 50);
+    };
+
+    timer = setTimeout(() => finish('error', `Timeout after ${CONN_TIMEOUT_MS}ms`), CONN_TIMEOUT_MS);
+
+    const safeSend = (obj) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(JSON.stringify(obj));
+      } catch {
+        /* socket gone; ignore */
+      }
+    };
+
+    const onMessage = (data) => {
+      let event;
+      try {
+        event = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      switch (event.type) {
+        case 'conversation.item.input_audio_transcription.delta':
+          if (state.tFirstDelta === null) state.tFirstDelta = performance.now();
+          return;
+        case 'conversation.item.input_audio_transcription.completed':
+          state.tFinal = performance.now();
+          if (typeof event.transcript === 'string') state.transcript = event.transcript;
+          finish('ok');
+          return;
+        case 'conversation.item.input_audio_transcription.failed':
+          finish('error', event?.error?.message || 'transcription failed');
+          return;
+        case 'error':
+          finish('error', event?.message || 'unknown server error');
+          return;
+        default:
+          return; // session.created and any other events are ignored
+      }
+    };
+
+    const stream = async () => {
+      state.tStreamStart = performance.now();
+      for (const b64 of chunks) {
+        if (state.finished) return;
+        safeSend({ type: 'input_audio_buffer.append', audio: b64 });
+        await delay(CHUNK_INTERVAL_MS);
+      }
+      if (state.finished) return;
+      safeSend({ type: 'input_audio_buffer.commit' });
+      state.tCommit = performance.now();
+    };
+
+    ws.on('open', () => {
+      stream().catch((e) => finish('error', `stream failure: ${e?.message || e}`));
+    });
+    ws.on('message', onMessage);
+    ws.on('error', (err) => {
+      finish('error', `socket error: ${err?.message || err}`);
+    });
+    ws.on('close', () => {
+      if (!state.finished) finish('error', 'socket closed before completed');
+    });
+  });
+}
+
+// ---------- aggregation ----------
+
+function summarize(model, runs) {
+  const ok = runs.filter((r) => r.status === 'ok');
+  const errs = runs.filter((r) => r.status === 'error');
+  const commitVals = ok.map((r) => r.commitToFinalMs).filter((v) => v != null);
+  const werVals = ok.map((r) => r.wer).filter((v) => v != null);
+  return {
+    model,
+    runs: runs.length,
+    ok: ok.length,
+    errors: errs.length,
+    medianCommitToFinalMs: median(commitVals),
+    meanWer: mean(werVals),
+    lastError: errs.length ? errs[errs.length - 1].error : null,
+    runsData: runs,
+  };
+}
+
+// ---------- main ----------
+
+async function main() {
+  let args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (e) {
+    console.error(e.message);
+    printHelp();
+    process.exit(2);
+  }
+  if (args.help) {
+    printHelp();
+    return;
+  }
+
+  if (!Number.isFinite(args.runs) || args.runs < 1) args.runs = 1;
+
+  // Load .env if TOGETHER_API_KEY is not already exported. This also surfaces
+  // STT_BENCH_MODELS from ./.env.
+  if (!process.env.TOGETHER_API_KEY) {
+    loadDotEnv(path.join(process.cwd(), '.env'));
+  }
+  const apiKey = process.env.TOGETHER_API_KEY;
+  if (!apiKey) {
+    console.error('TOGETHER_API_KEY is not set. Export it or put it in ./.env .');
+    process.exit(1);
+  }
+
+  // Resolve models: --models wins, then STT_BENCH_MODELS env, then default.
+  let models = args.models && args.models.length ? args.models : null;
+  if (!models) {
+    const envModels = process.env.STT_BENCH_MODELS;
+    if (envModels && envModels.trim()) {
+      models = envModels.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+  }
+  if (!models || !models.length) models = [...DEFAULT_MODELS];
+
+  // Ensure all fixtures exist (synthesize via TTS on first run).
+  for (const f of FIXTURES) {
+    try {
+      await ensureFixture(f, apiKey);
+    } catch (e) {
+      console.error(e.message);
+      process.exit(1);
+    }
+  }
+
+  // Preload fixture bytes + precompute chunks once (reused across models/runs).
+  const fixtures = FIXTURES.map((f, i) => {
+    const fixturePath = path.join('test-fixtures', f.name);
+    const pcm = fs.readFileSync(fixturePath);
+    return {
+      index: i + 1,
+      name: f.name,
+      text: f.text,
+      path: fixturePath,
+      bytes: pcm.length,
+      chunks: buildChunks(pcm),
+    };
+  });
+
+  const total = models.length * fixtures.length * args.runs;
+  console.log('Together realtime STT benchmark');
+  console.log('─'.repeat(53));
+  console.log(`Models      : ${models.length} (${models.map((m) => trunc(m, 30)).join(', ')})`);
+  console.log(`Runs/model  : ${args.runs} (per fixture)`);
+  console.log(`Fixtures    : ${fixtures.length}`);
+  console.log(`Chunk       : ${CHUNK_BYTES} bytes / ${CHUNK_INTERVAL_MS} ms @ ${FIXTURE_SAMPLE_RATE} Hz`);
+  console.log(`Timeout     : ${CONN_TIMEOUT_MS} ms (per connection)`);
+  console.log(`Endpoint    : ${WS_BASE}?intent=${INTENT}&model=...&input_audio_format=${INPUT_AUDIO_FORMAT}&turn_detection=${TURN_DETECTION}`);
+  console.log(`Total runs  : ${total}`);
+  console.log('─'.repeat(53));
+
+  const startedAt = Date.now();
+  let doneCount = 0;
+  const summaries = [];
+
+  for (const model of models) {
+    const modelRuns = [];
+    console.log(`\nModel: ${model}`);
+    for (const fx of fixtures) {
+      for (let r = 1; r <= args.runs; r += 1) {
+        const res = await runOne(model, fx, fx.index, r, apiKey);
+        modelRuns.push(res);
+        doneCount += 1;
+        if (res.status === 'ok') {
+          console.log(
+            `[${doneCount}/${total}] ${trunc(model, 30)} ${fx.name} run ${r}/${args.runs}  ok ` +
+              `commitToFinal=${fmtMs(res.commitToFinalMs)}ms firstDelta=${fmtMs(res.firstDeltaMs)}ms ` +
+              `wer=${fmtPct(res.wer)}  "${trunc(res.transcript, 60)}"`,
+          );
+        } else {
+          console.log(
+            `[${doneCount}/${total}] ${trunc(model, 30)} ${fx.name} run ${r}/${args.runs}  ` +
+              `ERROR - ${trunc(res.error || '', 120)}`,
+          );
+        }
+      }
+    }
+
+    console.log(`\nPer-run results for ${model}`);
+    console.log('─'.repeat(53));
+    printRunsTable(modelRuns);
+
+    const summary = summarize(model, modelRuns);
+    summaries.push(summary);
+    console.log(
+      `Summary: ${trunc(model, 40)}  ok ${summary.ok}/${summary.runs}  ` +
+        `median commitToFinal=${fmtMs(summary.medianCommitToFinalMs)}ms  ` +
+        `mean WER=${fmtPct(summary.meanWer)}` +
+        (summary.errors
+          ? `  (${summary.errors} error${summary.errors === 1 ? '' : 's'}: ${trunc(summary.lastError || '', 80)})`
+          : ''),
+    );
+  }
+
+  console.log('\nSummary (median commitToFinal + mean WER over successful runs)');
+  console.log('─'.repeat(53));
+  printSummaryTable(summaries);
+
+  // Full JSON results.
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const file = path.join(OUT_DIR, `together-stt-${stamp}.json`);
+  try {
+    fs.mkdirSync(OUT_DIR, { recursive: true });
+    const payload = {
+      meta: {
+        timestamp: new Date().toISOString(),
+        startedAt: new Date(startedAt).toISOString(),
+        durationMs: Date.now() - startedAt,
+        runs: args.runs,
+        models,
+        timeoutMs: CONN_TIMEOUT_MS,
+        wsBase: WS_BASE,
+        intent: INTENT,
+        inputAudioFormat: INPUT_AUDIO_FORMAT,
+        turnDetection: TURN_DETECTION,
+        chunkBytes: CHUNK_BYTES,
+        chunkIntervalMs: CHUNK_INTERVAL_MS,
+        fixtureSampleRate: FIXTURE_SAMPLE_RATE,
+        fixtures: fixtures.map((f) => ({
+          index: f.index,
+          path: f.path,
+          name: f.name,
+          groundTruth: f.text,
+          bytes: f.bytes,
+          chunks: f.chunks.length,
+        })),
+        tts: {
+          endpoint: TTS_ENDPOINT,
+          model: TTS_MODEL,
+          voice: TTS_VOICE,
+          responseFormat: 'raw',
+          synthSampleRate: TTS_SYNTH_SAMPLE_RATE,
+          fixtureSampleRate: FIXTURE_SAMPLE_RATE,
+        },
+      },
+      models: summaries,
+    };
+    fs.writeFileSync(file, JSON.stringify(payload, null, 2) + '\n');
+    console.log(`\nJSON written: ${file}`);
+  } catch (e) {
+    console.error(`\nFailed to write JSON: ${e.message}`);
+  }
+
+  const totalOk = summaries.reduce((s, m) => s + m.ok, 0);
+  const totalErr = summaries.reduce((s, m) => s + m.errors, 0);
+  console.log(
+    `\nDone: ${totalOk} ok / ${totalErr} errors across ${summaries.length} models in ${(
+      (Date.now() - startedAt) /
+      1000
+    ).toFixed(1)}s`,
+  );
+}
+
+main().catch((e) => {
+  console.error(`Fatal: ${e?.stack || e}`);
+  process.exit(1);
+});
