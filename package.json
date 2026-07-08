@@ -6,9 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "bench:stt": "node scripts/benchmark-together-stt.mts",
+    "bench:stt": "bun scripts/benchmark-together-stt.mts",
     "bench:tts": "node scripts/benchmark-together-tts.mts",
     "bench:repair": "node scripts/benchmark-together-repair.mts",
+    "bench:reply": "bun scripts/benchmark-together-reply.mts",
     "test:voice": "node scripts/e2e-voice-latency.mjs"
   },
   "dependencies": {
