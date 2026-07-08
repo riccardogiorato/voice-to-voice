@@ -65,7 +65,7 @@ export class VoiceSession {
     // the client hears why instead of a silent drop.
     this.expiryTimer = setTimeout(() => {
       this.send("error", {
-        message: "Session time limit reached. Tap the mic to start a new session.",
+        message: "Call time limit reached. Start a new call when you're ready.",
       });
       this.send("state", { state: "idle" });
       this.close();
@@ -530,4 +530,3 @@ export class VoiceSession {
     if (this.client.readyState === WebSocket.OPEN) this.client.close();
   }
 }
-

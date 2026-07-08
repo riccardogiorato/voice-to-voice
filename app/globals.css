@@ -39,10 +39,10 @@ button {
 }
 
 .phone-shell {
-  border-radius: 38px;
+  border-radius: 0;
 }
 
-@media (min-width: 520px) {
+@media (min-width: 1024px) {
   .phone-shell {
     border-radius: 42px;
   }
