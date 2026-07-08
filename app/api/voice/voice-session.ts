@@ -334,8 +334,7 @@ export class VoiceSession {
   }
 
   private async answer(transcript: string) {
-    this.cancelResponse();
-    this.send("audio.clear", {});
+    this.cancelAssistantOutput();
     this.send("state", { state: "thinking" });
 
     this.turnCount += 1;
@@ -447,8 +446,6 @@ export class VoiceSession {
     merged: boolean,
     transcriptId: number,
   ) {
-    this.send("state", { state: "thinking" });
-
     const controller = new AbortController();
     this.repairAbort = controller;
     const timeout = setTimeout(
@@ -602,6 +599,10 @@ export class VoiceSession {
     this.pendingTranscriptId += 1;
     this.repairAbort?.abort();
     this.repairAbort = undefined;
+    this.cancelAssistantOutput();
+  }
+
+  private cancelAssistantOutput() {
     this.chatAbort?.abort();
     this.chatAbort = undefined;
     this.pendingSpeech = [];
