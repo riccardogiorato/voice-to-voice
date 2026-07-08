@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import Image from "next/image";
-import type { MutableRefObject } from "react";
+import type { CSSProperties, MutableRefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
@@ -103,6 +103,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [micActivity, setMicActivity] = useState(0);
 
   const socketRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -126,6 +127,8 @@ export default function Home() {
   const noiseFloorRef = useRef(0.008);
   const pendingPhaseRef = useRef<Phase | null>(null);
   const mutedRef = useRef(false);
+  const micActivityRef = useRef(0);
+  const lastMicActivityPaintRef = useRef(0);
   const speechOpenedAtRef = useRef(Number.NEGATIVE_INFINITY);
   const tenVadRef = useRef<BrowserTenVad | null>(null);
   const tenVadPromiseRef = useRef<Promise<BrowserTenVad | null> | null>(null);
@@ -135,6 +138,10 @@ export default function Home() {
     muted && isActive
       ? { label: "Muted", detail: "Tap the mic to resume" }
       : phaseCopy[phase];
+  const waveformVisible = phase === "listening" && !muted;
+  const orbStyle = {
+    "--voice-activity": waveformVisible ? micActivity.toFixed(3) : "0",
+  } as CSSProperties;
 
   function resetConversation() {
     clearPlayback();
@@ -353,6 +360,7 @@ export default function Home() {
     updatePhase("idle");
     setPartial("");
     setAssistantDraft("");
+    setMicActivity(0);
   }
 
   useEffect(() => {
@@ -378,6 +386,9 @@ export default function Home() {
     inputSourceRef.current = null;
     mediaStreamRef.current = null;
     audioContextRef.current = null;
+    micActivityRef.current = 0;
+    lastMicActivityPaintRef.current = 0;
+    setMicActivity(0);
     nextPlayTimeRef.current = 0;
     micBufferRef.current = [];
     micBufferSamplesRef.current = 0;
@@ -436,6 +447,11 @@ export default function Home() {
       : null;
     const openThreshold = Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current * 3);
     const hasSpeech = vadSpeech ?? level >= openThreshold;
+    updateMicActivity(
+      vadDecision
+        ? normalizeRange(vadDecision.probability, 0.18, 0.92)
+        : normalizeRange(level, openThreshold * 0.35, openThreshold * 1.8),
+    );
 
     // eslint-disable-next-line react-hooks/purity -- runs in mic callbacks, never during render
     const now = performance.now();
@@ -499,6 +515,7 @@ export default function Home() {
     preRollRef.current = [];
     preRollSamplesRef.current = 0;
     speechOpenedAtRef.current = Number.NEGATIVE_INFINITY;
+    updateMicActivity(0, true);
   }
 
   function flushSpeechAudio(socket: WebSocket, sampleRate: number) {
@@ -587,6 +604,19 @@ export default function Home() {
         .catch(() => null);
     }
     return tenVadPromiseRef.current;
+  }
+
+  function updateMicActivity(next: number, immediate = false) {
+    const smoothed = immediate
+      ? next
+      : micActivityRef.current * 0.72 + clamp01(next) * 0.28;
+    micActivityRef.current = smoothed;
+
+    const now = performance.now();
+    if (!immediate && now - lastMicActivityPaintRef.current < 70) return;
+
+    lastMicActivityPaintRef.current = now;
+    setMicActivity(smoothed);
   }
 
   const transcriptItems = useMemo<TranscriptItem[]>(() => {
@@ -692,10 +722,27 @@ export default function Home() {
                 aria-label="Start conversation"
                 title={isActive ? undefined : "Start conversation"}
               >
-                <div className={`voice-orb voice-orb-${phase}`} aria-hidden>
+                <div className={`voice-orb voice-orb-${phase}`} style={orbStyle} aria-hidden>
                   <div className="voice-orb-core" />
                 </div>
               </button>
+
+              <div
+                className={`voice-waveform ${
+                  waveformVisible ? "voice-waveform-active" : ""
+                }`}
+                style={orbStyle}
+                aria-hidden
+              >
+                {[0.34, 0.62, 0.46, 0.82, 0.54, 1, 0.5, 0.78, 0.42, 0.66, 0.36].map(
+                  (gain, index) => (
+                    <span
+                      key={index}
+                      style={{ "--bar-gain": gain } as CSSProperties}
+                    />
+                  ),
+                )}
+              </div>
 
               <div className="rounded-full bg-white/38 px-4 py-2 text-center shadow-[0_0_0_1px_rgba(255,255,255,0.55),0_10px_28px_rgba(90,43,103,0.08)] backdrop-blur-xl">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6b5a82]">
@@ -957,6 +1004,15 @@ function rms(input: Float32Array) {
   }
 
   return Math.sqrt(sum / Math.max(1, input.length));
+}
+
+function clamp01(value: number) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function normalizeRange(value: number, floor: number, ceiling: number) {
+  if (ceiling <= floor) return 0;
+  return clamp01((value - floor) / (ceiling - floor));
 }
 
 function concatFloat32(chunks: Float32Array[], totalLength: number) {
