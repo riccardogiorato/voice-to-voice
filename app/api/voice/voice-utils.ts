@@ -20,6 +20,7 @@ export const TTS_MODELS = uniqueTtsConfigs([
   { model: TTS_FALLBACK_MODEL, voice: TTS_FALLBACK_VOICE },
 ]);
 export const TRANSCRIPT_MERGE_WINDOW_MS = 1500;
+export const REPLY_GRACE_MS = 1000;
 const GHOST_TRANSCRIPTS = new Set([
   "you",
   "thank you",
@@ -141,6 +142,7 @@ export function cleanTranscript(transcript: string) {
 
 export function isGhostTranscript(transcript: string) {
   const normalized = normalizeTranscript(transcript);
+  if (!normalized) return true;
   if (!GHOST_TRANSCRIPTS.has(normalized)) return false;
   return normalized.split(" ").length <= 3;
 }

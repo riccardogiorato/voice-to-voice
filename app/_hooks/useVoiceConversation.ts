@@ -190,7 +190,7 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "transcript.delta") {
-      setPartial(event.text);
+      setPartial(isDisplayableTranscriptText(event.text) ? event.text : "");
       return;
     }
 
@@ -597,4 +597,8 @@ function findLastTurnIndex(turns: Turn[], role: Turn["role"]) {
     if (turns[index].role === role) return index;
   }
   return -1;
+}
+
+function isDisplayableTranscriptText(text: string) {
+  return /[\p{L}\p{N}]/u.test(text);
 }

@@ -9,6 +9,7 @@ import {
   mergeTranscriptText,
   normalizeTranscript,
   parseJson,
+  REPLY_GRACE_MS,
   resample,
   shouldFlushFirstTtsChunk,
   STT_MODELS,
@@ -42,6 +43,7 @@ export class VoiceSession {
   private ttsFallbackPending = false;
   private lastUserTranscript = "";
   private lastUserFinalAt = 0;
+  private answerTimer?: NodeJS.Timeout;
 
   constructor(private client: WebSocket) {}
 
@@ -187,38 +189,39 @@ export class VoiceSession {
     if (!message) return;
 
     if (message.type === "conversation.item.input_audio_transcription.delta") {
-      this.send("transcript.delta", { text: message.delta ?? "" });
+      const delta = String(message.delta ?? "");
+      this.send("transcript.delta", {
+        text: normalizeTranscript(delta) ? delta : "",
+      });
       return;
     }
 
     if (message.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = cleanTranscript(String(message.transcript ?? ""));
-      if (transcript.length > 0) {
-        if (isGhostTranscript(transcript)) {
-          this.send("transcript.ignored", { text: transcript });
-          return;
-        }
-
-        if (this.isDuplicateTranscript(transcript)) return;
-
-        const now = Date.now();
-        const shouldMerge =
-          this.lastUserTranscript.length > 0 &&
-          now - this.lastUserFinalAt < TRANSCRIPT_MERGE_WINDOW_MS;
-        const finalTranscript = shouldMerge
-          ? mergeTranscriptText(this.lastUserTranscript, transcript)
-          : transcript;
-
-        if (shouldMerge) this.retractLastTurnForMerge();
-
-        this.lastUserTranscript = finalTranscript;
-        this.lastUserFinalAt = now;
-        this.send("transcript.final", {
-          text: finalTranscript,
-          merged: shouldMerge,
-        });
-        void this.answer(finalTranscript);
+      if (transcript.length === 0 || isGhostTranscript(transcript)) {
+        this.send("transcript.ignored", { text: transcript });
+        return;
       }
+
+      if (this.isDuplicateTranscript(transcript)) return;
+
+      const now = Date.now();
+      const shouldMerge =
+        this.lastUserTranscript.length > 0 &&
+        now - this.lastUserFinalAt < TRANSCRIPT_MERGE_WINDOW_MS;
+      const finalTranscript = shouldMerge
+        ? mergeTranscriptText(this.lastUserTranscript, transcript)
+        : transcript;
+
+      if (shouldMerge) this.retractLastTurnForMerge();
+
+      this.lastUserTranscript = finalTranscript;
+      this.lastUserFinalAt = now;
+      this.send("transcript.final", {
+        text: finalTranscript,
+        merged: shouldMerge,
+      });
+      this.scheduleAnswer(finalTranscript);
       return;
     }
 
@@ -420,6 +423,14 @@ export class VoiceSession {
     if (this.history.length > 8) this.history = this.history.slice(-8);
   }
 
+  private scheduleAnswer(transcript: string) {
+    clearTimeout(this.answerTimer);
+    this.answerTimer = setTimeout(() => {
+      this.answerTimer = undefined;
+      if (!this.stopped) void this.answer(transcript);
+    }, REPLY_GRACE_MS);
+  }
+
   private retractLastTurnForMerge() {
     if (this.history.at(-1)?.role === "assistant") this.history.pop();
     if (this.history.at(-1)?.role === "user") this.history.pop();
@@ -486,6 +497,8 @@ export class VoiceSession {
   }
 
   private cancelResponse() {
+    clearTimeout(this.answerTimer);
+    this.answerTimer = undefined;
     this.chatAbort?.abort();
     this.chatAbort = undefined;
     this.pendingSpeech = [];
@@ -524,6 +537,7 @@ export class VoiceSession {
     this.stopped = true;
     clearInterval(this.keepaliveTimer);
     clearTimeout(this.expiryTimer);
+    clearTimeout(this.answerTimer);
     this.chatAbort?.abort();
     this.stt?.close();
     this.tts?.close();
