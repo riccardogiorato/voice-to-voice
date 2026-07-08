@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:voice": "node scripts/e2e-voice-latency.mjs"
   },
   "dependencies": {
     "@vercel/functions": "^3.7.5",
