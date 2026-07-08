@@ -437,6 +437,7 @@ export function useVoiceConversation() {
     if (hasSpeech) {
       // Pre-roll must lead the opening frame or speech onsets are clipped.
       if (!speechOpenRef.current) {
+        socket.send(JSON.stringify({ type: "speech.started" }));
         micBufferRef.current.push(...preRollRef.current);
         micBufferSamplesRef.current += preRollSamplesRef.current;
         preRollRef.current = [];

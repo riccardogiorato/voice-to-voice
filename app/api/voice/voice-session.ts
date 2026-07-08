@@ -49,6 +49,10 @@ export class VoiceSession {
   private answerTimer?: NodeJS.Timeout;
   private repairAbort?: AbortController;
   private pendingTranscriptId = 0;
+  private userSpeechActive = false;
+  private speechIdleTimer?: NodeJS.Timeout;
+  private awaitingCommittedTranscript = false;
+  private deferredAnswer?: { rawTranscript: string; merged: boolean };
   private lastRawTranscript = "";
   private lastRepairedTranscript = "";
 
@@ -166,6 +170,10 @@ export class VoiceSession {
       this.history = [];
       this.lastUserTranscript = "";
       this.lastUserFinalAt = 0;
+      this.userSpeechActive = false;
+      this.awaitingCommittedTranscript = false;
+      this.deferredAnswer = undefined;
+      clearTimeout(this.speechIdleTimer);
       this.lastRawTranscript = "";
       this.lastRepairedTranscript = "";
       this.send("state", { state: "listening" });
@@ -183,12 +191,23 @@ export class VoiceSession {
       return;
     }
 
+    if (event.type === "speech.started") {
+      this.userSpeechActive = true;
+      this.pausePendingAnswer();
+      this.refreshSpeechIdleTimer();
+      return;
+    }
+
     if (event.type === "audio.commit") {
+      this.userSpeechActive = false;
+      this.awaitingCommittedTranscript = true;
+      clearTimeout(this.speechIdleTimer);
       this.commitAudio();
       return;
     }
 
     if (event.type === "audio.input") {
+      if (this.userSpeechActive) this.refreshSpeechIdleTimer();
       this.forwardAudio(event.audio, event.sampleRate);
     }
   }
@@ -210,11 +229,17 @@ export class VoiceSession {
     if (message.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = cleanTranscript(String(message.transcript ?? ""));
       if (transcript.length === 0 || isGhostTranscript(transcript)) {
+        this.awaitingCommittedTranscript = false;
         this.send("transcript.ignored", { text: transcript });
+        this.scheduleDeferredAnswerIfIdle();
         return;
       }
 
-      if (this.isDuplicateTranscript(transcript)) return;
+      this.awaitingCommittedTranscript = false;
+      if (this.isDuplicateTranscript(transcript)) {
+        this.scheduleDeferredAnswerIfIdle();
+        return;
+      }
 
       const now = Date.now();
       const shouldMerge =
@@ -233,6 +258,8 @@ export class VoiceSession {
     }
 
     if (message.type === "conversation.item.input_audio_transcription.failed") {
+      this.awaitingCommittedTranscript = false;
+      this.scheduleDeferredAnswerIfIdle();
       this.send("error", {
         message: message.error?.message ?? "Transcription failed.",
       });
@@ -430,6 +457,15 @@ export class VoiceSession {
   }
 
   private scheduleAnswer(rawTranscript: string, merged: boolean) {
+    this.deferredAnswer = { rawTranscript, merged };
+    this.scheduleDeferredAnswerIfIdle();
+  }
+
+  private scheduleDeferredAnswerIfIdle() {
+    if (!this.deferredAnswer) return;
+    if (this.userSpeechActive || this.awaitingCommittedTranscript) return;
+
+    const { rawTranscript, merged } = this.deferredAnswer;
     clearTimeout(this.answerTimer);
     this.repairAbort?.abort();
     this.repairAbort = undefined;
@@ -437,6 +473,7 @@ export class VoiceSession {
 
     this.answerTimer = setTimeout(() => {
       this.answerTimer = undefined;
+      this.deferredAnswer = undefined;
       if (!this.stopped) {
         void this.settleTranscriptAndAnswer(rawTranscript, merged, transcriptId);
       }
@@ -604,12 +641,32 @@ export class VoiceSession {
   }
 
   private cancelResponse() {
+    this.cancelPendingAnswer(false);
+    this.awaitingCommittedTranscript = false;
+    this.userSpeechActive = false;
+    clearTimeout(this.speechIdleTimer);
+    this.cancelAssistantOutput();
+  }
+
+  private pausePendingAnswer() {
+    this.cancelPendingAnswer(true);
+  }
+
+  private cancelPendingAnswer(keepDeferredAnswer: boolean) {
     clearTimeout(this.answerTimer);
     this.answerTimer = undefined;
     this.pendingTranscriptId += 1;
     this.repairAbort?.abort();
     this.repairAbort = undefined;
-    this.cancelAssistantOutput();
+    if (!keepDeferredAnswer) this.deferredAnswer = undefined;
+  }
+
+  private refreshSpeechIdleTimer() {
+    clearTimeout(this.speechIdleTimer);
+    this.speechIdleTimer = setTimeout(() => {
+      this.userSpeechActive = false;
+      this.scheduleDeferredAnswerIfIdle();
+    }, 1500);
   }
 
   private cancelAssistantOutput() {
@@ -652,6 +709,7 @@ export class VoiceSession {
     clearInterval(this.keepaliveTimer);
     clearTimeout(this.expiryTimer);
     clearTimeout(this.answerTimer);
+    clearTimeout(this.speechIdleTimer);
     this.repairAbort?.abort();
     this.chatAbort?.abort();
     this.stt?.close();

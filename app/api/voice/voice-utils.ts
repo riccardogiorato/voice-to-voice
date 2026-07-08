@@ -40,6 +40,7 @@ export type ClientEvent =
   | { type: "conversation.reset" }
   | { type: "conversation.stop" }
   | { type: "response.cancel" }
+  | { type: "speech.started" }
   | { type: "audio.commit" }
   | { type: "audio.input"; audio: string; sampleRate: number };
 
