@@ -8,7 +8,11 @@ const STT_FALLBACK_MODEL = envOrDefault(
 );
 export const CHAT_MODEL = envOrDefault(
   "TOGETHER_CHAT_MODEL",
-  "Qwen/Qwen2.5-7B-Instruct-Turbo",
+  "openai/gpt-oss-20b",
+);
+const CHAT_FALLBACK_MODEL = envOrDefault(
+  "TOGETHER_CHAT_FALLBACK_MODEL",
+  "nvidia/nemotron-3-ultra-550b-a55b",
 );
 export const TRANSCRIPT_REPAIR_MODEL = envOrDefault(
   "TOGETHER_TRANSCRIPT_REPAIR_MODEL",
@@ -19,6 +23,7 @@ const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "nonfiction man");
 const TTS_FALLBACK_MODEL = envOrDefault("TOGETHER_TTS_FALLBACK_MODEL", "hexgrad/Kokoro-82M");
 const TTS_FALLBACK_VOICE = envOrDefault("TOGETHER_TTS_FALLBACK_VOICE", "af_heart");
 export const STT_MODELS = uniqueNonEmpty([STT_MODEL, STT_FALLBACK_MODEL]);
+export const CHAT_MODELS = uniqueNonEmpty([CHAT_MODEL, CHAT_FALLBACK_MODEL]);
 export const TTS_MODELS = uniqueTtsConfigs([
   { model: TTS_MODEL, voice: TTS_VOICE },
   { model: TTS_FALLBACK_MODEL, voice: TTS_FALLBACK_VOICE },
@@ -56,6 +61,8 @@ export const systemPrompt =
   "NVIDIA Nemotron transcribes the user's speech, an open chat model writes your replies, and Cartesia Sonic speaks them. " +
   "Whisper and Kokoro are configured as fallbacks. " +
   "If asked about Together AI, Together Voice, or this app, answer from those facts only. " +
+  "You can use a fast web_search tool for current, recent, factual, or source-backed questions. " +
+  "When tool results are provided, synthesize them into a short spoken answer and do not mention hidden reasoning. " +
   "Always reply in the same language as the user's latest message; if the language is unclear, default to English. " +
   "Answer naturally in one or two short spoken sentences. Spell out numbers and abbreviations. No markdown.";
 
