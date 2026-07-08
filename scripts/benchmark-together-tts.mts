@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// scripts/benchmark-together-tts.mjs
+// scripts/benchmark-together-tts.mts
 //
-// Standalone realtime text-to-speech latency benchmark for Together AI
-// websocket TTS models. Measures time-to-first-audio per model/voice by
-// streaming text into a single persistent TTS websocket per model (mirroring
-// how app/api/voice/route.ts keeps one TTS socket per voice session).
+// Standalone text-to-speech latency benchmark for Together AI TTS models.
+// Measures time-to-first-audio per model/voice using the lowest-latency
+// supported delivery method for each model: realtime websocket for Kokoro and
+// Orpheus, REST audio generation for Cartesia Sonic models.
 //
 //   * Opens wss://api.together.ai/v1/audio/speech/websocket?model=<m>&voice=<v>
 //     &response_format=pcm&sample_rate=24000&segment=sentence with an
@@ -25,34 +25,125 @@
 // Only external dependency is 'ws' (already installed). Requires Node 20+.
 //
 // Usage:
-//   TOGETHER_API_KEY=... node scripts/benchmark-together-tts.mjs
-//   node scripts/benchmark-together-tts.mjs --models "hexgrad/Kokoro-82M,cartesia/sonic-english" --runs 3
-//   TTS_BENCH_MODELS="hexgrad/Kokoro-82M" node scripts/benchmark-together-tts.mjs --runs 5
+//   TOGETHER_API_KEY=... node scripts/benchmark-together-tts.mts
+//   node scripts/benchmark-together-tts.mts --models "hexgrad/Kokoro-82M,cartesia/sonic" --runs 3
+//   TTS_BENCH_MODELS="hexgrad/Kokoro-82M" node scripts/benchmark-together-tts.mts --runs 5
 //
 // Reads TOGETHER_API_KEY from process.env. Also tries to load ./.env when the
 // key is not already exported, so the project's gitignored .env works out of
 // the box. The model list is taken from --models, else TTS_BENCH_MODELS, else
-// the built-in default pair.
+// the built-in serverless TTS catalog.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import WebSocket from 'ws';
 
+type CliArgs = {
+  models: string[] | null;
+  runs: number;
+  timeout: number;
+  outDir: string;
+  noJson: boolean;
+  help: boolean;
+};
+
+type RunStatus = 'ok' | 'error';
+
+type TtsRunEntry = {
+  model?: string;
+  sentenceNo: number;
+  runNo: number;
+  sentence?: string;
+  status: RunStatus;
+  error: string | null;
+  firstAudioMs: number | null;
+  doneMs: number | null;
+  audioSeconds: number | null;
+  rtf: number | null;
+  audioBytes: number;
+  deltaCount: number;
+  doneCount: number;
+};
+
+type ActiveRunState = {
+  sentenceNo: number;
+  runNo: number;
+  sentence: string;
+  status: RunStatus;
+  error: string | null;
+  commitAt: number;
+  firstAudioAt: number | null;
+  firstDoneAt: number | null;
+  lastDoneAt: number | null;
+  doneAt: number | null;
+  audioBytes: number;
+  deltaCount: number;
+  doneCount: number;
+  lastActivityAt: number;
+  settled: boolean;
+};
+
+type ModelResult = {
+  model: string;
+  voice: string | null;
+  delivery: Delivery;
+  url: string;
+  sessionMs: number | null;
+  status: 'ok' | 'failed';
+  connectionError: string | null;
+  runs: TtsRunEntry[];
+};
+
+type ModelSummary = {
+  model: string;
+  voice: string | null;
+  delivery: Delivery;
+  status: 'ok' | 'failed';
+  sessionMs: number | null;
+  runs: number;
+  ok: number;
+  errors: number;
+  medianFirstAudioMs: number | null;
+  medianDoneMs: number | null;
+  medianAudioSeconds: number | null;
+  medianRtf: number | null;
+  connectionError: string | null;
+  lastError: string | null;
+};
+
+type Delivery = 'websocket' | 'rest';
+
 // ---------- constants ----------
 
 const WS_ENDPOINT = 'wss://api.together.ai/v1/audio/speech/websocket';
+const REST_ENDPOINT = 'https://api.together.ai/v1/audio/speech';
 
-// Default Together realtime TTS websocket models (override with --models or
-// TTS_BENCH_MODELS). hexgrad/Kokoro-82M always emits 24 kHz s16le PCM.
-const DEFAULT_MODELS = ['hexgrad/Kokoro-82M', 'cartesia/sonic-english'];
+// Together serverless TTS catalog, verified against /v1/models on 2026-07-08.
+// Override with --models / TTS_BENCH_MODELS for ad hoc tests.
+const DEFAULT_MODELS = [
+  'hexgrad/Kokoro-82M',
+  'canopylabs/orpheus-3b-0.1-ft',
+  'cartesia/sonic',
+  'cartesia/sonic-3',
+  'cartesia/sonic-2',
+];
 
-// Default voice per model. The TTS overview docs do not state a default voice
-// for cartesia/sonic-english ("All valid voices supported by Cartesia are
-// supported" / "pass in the voice ID instead of the name"), so for that model
-// we omit the voice query param and let the server default apply. af_heart is
-// the documented Kokoro voice used in app/api/voice/route.ts.
-const KOKORO_MODEL = 'hexgrad/Kokoro-82M';
-const KOKORO_VOICE = 'af_heart';
+// Default voice per model, verified against /v1/voices on 2026-07-08.
+const DEFAULT_VOICES: Record<string, string> = {
+  'hexgrad/Kokoro-82M': 'af_heart',
+  'canopylabs/orpheus-3b-0.1-ft': 'tara',
+  'cartesia/sonic': 'db6b0ed5-d5d3-463d-ae85-518a07d3c2b4',
+  'cartesia/sonic-3': 'db6b0ed5-d5d3-463d-ae85-518a07d3c2b4',
+  'cartesia/sonic-2': 'db6b0ed5-d5d3-463d-ae85-518a07d3c2b4',
+};
+
+const DELIVERY_BY_MODEL: Record<string, Delivery> = {
+  'hexgrad/Kokoro-82M': 'websocket',
+  'canopylabs/orpheus-3b-0.1-ft': 'websocket',
+  'cartesia/sonic': 'rest',
+  'cartesia/sonic-3': 'rest',
+  'cartesia/sonic-2': 'rest',
+};
 
 // PCM is 16-bit little-endian mono at 24 kHz (per the websocket reference).
 const SAMPLE_RATE = 24000;
@@ -78,8 +169,8 @@ const DEFAULT_RUN_TIMEOUT_MS = 20000;
 
 // ---------- helpers ----------
 
-function loadDotEnv(file) {
-  let text;
+function loadDotEnv(file: string) {
+  let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch {
@@ -102,8 +193,8 @@ function loadDotEnv(file) {
   }
 }
 
-function parseArgs(argv) {
-  const a = {
+function parseArgs(argv: string[]): CliArgs {
+  const a: CliArgs = {
     models: null,
     runs: 3,
     timeout: DEFAULT_RUN_TIMEOUT_MS,
@@ -112,7 +203,7 @@ function parseArgs(argv) {
     help: false,
   };
   const rest = [...argv];
-  const need = (name) => {
+  const need = (name: string) => {
     const v = rest.shift();
     if (v === undefined) throw new Error(`Missing value for ${name}`);
     return v;
@@ -150,10 +241,10 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`benchmark-together-tts.mjs - Together realtime TTS websocket latency benchmark
+  console.log(`benchmark-together-tts.mts - Together TTS latency benchmark
 
 Usage:
-  node scripts/benchmark-together-tts.mjs [options]
+  node scripts/benchmark-together-tts.mts [options]
 
 Options:
   --models "a,b"      Comma-separated TTS model ids to benchmark
@@ -170,47 +261,48 @@ Env:
   TTS_BENCH_MODELS    Comma-separated model list fallback when --models is absent.
 
 Notes:
-  Opens ONE websocket per model and reuses it across every (sentence, run) for
-  that model, sending input_text_buffer.append + input_text_buffer.commit and
-  waiting for conversation.item.audio_output.done before the next commit. Voices:
-  af_heart for hexgrad/Kokoro-82M; for cartesia/sonic-english the docs state no
-  default voice, so the voice param is omitted and the server default applies.
+  Uses the configured delivery method for each model: websocket for Kokoro and
+  Orpheus, REST audio generation for Cartesia Sonic models. Voices come from
+  the built-in DEFAULT_VOICES map, verified with /v1/voices.
   tts.failed / socket errors are recorded per-run and never abort the run; a
   model whose socket cannot open is marked failed and the benchmark continues.
   Exit code is 0 as long as the benchmark completes, even with failed models.
 `);
 }
 
-function median(arr) {
+function median(arr: number[]) {
   if (!arr.length) return null;
   const s = [...arr].sort((x, y) => x - y);
   const mid = Math.floor(s.length / 2);
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-const fmtMs = (v) => (v == null ? '-' : Math.round(v).toLocaleString('en-US'));
-const fmt2 = (v) => (v == null ? '-' : v.toFixed(2));
-const fmt3 = (v) => (v == null ? '-' : v.toFixed(3));
+const fmtMs = (v: number | null) => (v == null ? '-' : Math.round(v).toLocaleString('en-US'));
+const fmt3 = (v: number | null) => (v == null ? '-' : v.toFixed(3));
 
-function trunc(s, n) {
-  return s.length <= n ? s : s.slice(0, n - 1) + '…';
+function trunc(s: unknown, n: number) {
+  const text = String(s ?? '');
+  return text.length <= n ? text : text.slice(0, n - 1) + '…';
 }
 
-function errorString(e) {
+function errorString(e: unknown) {
   if (e == null) return 'Unknown error';
   if (typeof e === 'string') return e;
-  if (e.message) return `${e.name || 'Error'}: ${e.message}`;
+  if (e instanceof Error) return `${e.name || 'Error'}: ${e.message}`;
   return String(e);
 }
 
-// Build the websocket URL for a model. Kokoro gets voice=af_heart; for every
-// other model (incl. cartesia/sonic-english, whose docs state no default voice)
-// the voice param is omitted so the server applies its own default.
-function buildUrl(model) {
+function deliveryFor(model: string): Delivery {
+  return DELIVERY_BY_MODEL[model] ?? 'rest';
+}
+
+function buildUrl(model: string) {
+  if (deliveryFor(model) === 'rest') return REST_ENDPOINT;
   const url = new URL(WS_ENDPOINT);
   url.searchParams.set('model', model);
-  if (model === KOKORO_MODEL) {
-    url.searchParams.set('voice', KOKORO_VOICE);
+  const voice = voiceFor(model);
+  if (voice) {
+    url.searchParams.set('voice', voice);
   }
   url.searchParams.set('response_format', 'pcm');
   url.searchParams.set('sample_rate', String(SAMPLE_RATE));
@@ -218,18 +310,24 @@ function buildUrl(model) {
   return url.toString();
 }
 
-function voiceFor(model) {
-  return model === KOKORO_MODEL ? KOKORO_VOICE : null;
+function voiceFor(model: string) {
+  return DEFAULT_VOICES[model] ?? null;
 }
 
 // ---------- per-model runner ----------
 
+async function runModel(model: string, runs: number, timeoutMs: number, apiKey: string): Promise<ModelResult> {
+  if (deliveryFor(model) === 'rest') return runRestModel(model, runs, timeoutMs, apiKey);
+  return runWebSocketModel(model, runs, timeoutMs, apiKey);
+}
+
 // Open and run the full (sentence x runs) matrix for one model on a single
 // shared websocket. Resolves to a model result object; never throws.
-async function runModel(model, runs, timeoutMs, apiKey) {
-  const result = {
+async function runWebSocketModel(model: string, runs: number, timeoutMs: number, apiKey: string): Promise<ModelResult> {
+  const result: ModelResult = {
     model,
     voice: voiceFor(model),
+    delivery: 'websocket',
     url: buildUrl(model),
     sessionMs: null,
     status: 'ok',
@@ -238,7 +336,7 @@ async function runModel(model, runs, timeoutMs, apiKey) {
   };
 
   const connectStart = performance.now();
-  let ws;
+  let ws: WebSocket;
   try {
     ws = new WebSocket(result.url, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -246,6 +344,7 @@ async function runModel(model, runs, timeoutMs, apiKey) {
   } catch (e) {
     result.status = 'failed';
     result.connectionError = `WebSocket init failed: ${errorString(e)}`;
+    fillFailedRuns(result, runs, result.connectionError);
     return result;
   }
 
@@ -253,10 +352,10 @@ async function runModel(model, runs, timeoutMs, apiKey) {
   // attached for the whole run; runState points at the active run (or null
   // between runs) so the same handler routes every message.
   let sessionReady = false;
-  let sessionError = null;
-  let runState = null;
+  let sessionError: string | null = null;
+  let runState: ActiveRunState | null = null;
 
-  const handleFatal = (msg) => {
+  const handleFatal = (msg: string) => {
     if (!sessionReady) {
       sessionError = msg;
     } else if (runState && !runState.settled) {
@@ -266,8 +365,12 @@ async function runModel(model, runs, timeoutMs, apiKey) {
     }
   };
 
-  ws.on('message', (data) => {
-    let message;
+  ws.on('message', (data: WebSocket.RawData) => {
+    let message: {
+      type?: string;
+      delta?: string;
+      error?: { message?: string };
+    };
     try {
       message = JSON.parse(data.toString());
     } catch {
@@ -342,11 +445,11 @@ async function runModel(model, runs, timeoutMs, apiKey) {
 
   // Wait for session.created (with a bounded timeout). A failure here fails
   // the entire model: e.g. model_not_available on this account, bad api key.
-  const sessionOk = await new Promise((resolve) => {
+  const sessionOk = await new Promise<boolean>((resolve) => {
     const settled = () => resolve(sessionReady);
     if (sessionReady || sessionError) return settled();
     let done = false;
-    const finish = (val) => {
+    const finish = (val: boolean) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
@@ -367,6 +470,7 @@ async function runModel(model, runs, timeoutMs, apiKey) {
   if (!sessionOk) {
     result.status = 'failed';
     result.connectionError = sessionError || 'Could not establish TTS session';
+    fillFailedRuns(result, runs, result.connectionError);
     try {
       ws.close();
     } catch {}
@@ -383,7 +487,7 @@ async function runModel(model, runs, timeoutMs, apiKey) {
   for (let s = 0; s < SENTENCES.length; s += 1) {
     const sentence = SENTENCES[s];
     for (let r = 1; r <= runs; r += 1) {
-      const entry = await runOne(ws, s + 1, r, sentence, timeoutMs, () => runState, (st) => {
+      const entry = await runOne(ws, s + 1, r, sentence, timeoutMs, (st) => {
         runState = st;
       });
       result.runs.push(entry);
@@ -425,7 +529,126 @@ async function runModel(model, runs, timeoutMs, apiKey) {
   return result;
 }
 
-function makeFailedRun(sentenceNo, runNo, error) {
+async function runRestModel(model: string, runs: number, timeoutMs: number, apiKey: string): Promise<ModelResult> {
+  const result: ModelResult = {
+    model,
+    voice: voiceFor(model),
+    delivery: 'rest',
+    url: REST_ENDPOINT,
+    sessionMs: null,
+    status: 'ok',
+    connectionError: null,
+    runs: [],
+  };
+
+  console.log(`  REST endpoint (voice=${result.voice ?? 'server-default'})`);
+
+  for (let s = 0; s < SENTENCES.length; s += 1) {
+    const sentence = SENTENCES[s];
+    for (let r = 1; r <= runs; r += 1) {
+      const entry = await runRestOne(model, result.voice, s + 1, r, sentence, timeoutMs, apiKey);
+      result.runs.push(entry);
+
+      const tag = `s${s + 1}r${r}`;
+      if (entry.status === 'ok') {
+        console.log(
+          `  [${tag}] ok  firstAudio=${fmtMs(entry.firstAudioMs)} ms  ` +
+            `done=${fmtMs(entry.doneMs)} ms  audio=${fmt3(entry.audioSeconds)} s  ` +
+            `rtf=${fmt3(entry.rtf)}`,
+        );
+      } else {
+        console.log(`  [${tag}] ERROR - ${trunc(entry.error || '', 140)}`);
+      }
+    }
+  }
+
+  if (result.runs.length > 0 && result.runs.every((entry) => entry.status === 'error')) {
+    result.status = 'failed';
+    result.connectionError = result.runs[result.runs.length - 1].error;
+  }
+
+  return result;
+}
+
+async function runRestOne(
+  model: string,
+  voice: string | null,
+  sentenceNo: number,
+  runNo: number,
+  sentence: string,
+  timeoutMs: number,
+  apiKey: string,
+): Promise<TtsRunEntry> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const started = performance.now();
+
+  try {
+    const response = await fetch(REST_ENDPOINT, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        input: sentence,
+        voice,
+        response_format: 'raw',
+        sample_rate: SAMPLE_RATE,
+        stream: false,
+      }),
+    });
+    const firstAudioAt = performance.now();
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      return makeFailedRun(
+        sentenceNo,
+        runNo,
+        `HTTP ${response.status}: ${trunc(detail.replace(/\s+/g, ' '), 220)}`,
+      );
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const doneAt = performance.now();
+    const doneMs = doneAt - started;
+    const audioSeconds = bytes.length / BYTES_PER_SAMPLE / SAMPLE_RATE;
+    return {
+      sentenceNo,
+      runNo,
+      sentence,
+      status: 'ok',
+      error: null,
+      firstAudioMs: firstAudioAt - started,
+      doneMs,
+      audioSeconds,
+      rtf: doneMs > 0 ? audioSeconds / (doneMs / 1000) : null,
+      audioBytes: bytes.length,
+      deltaCount: 1,
+      doneCount: 1,
+    };
+  } catch (e) {
+    const message =
+      e instanceof Error && e.name === 'AbortError'
+        ? `Timeout after ${timeoutMs} ms`
+        : errorString(e);
+    return makeFailedRun(sentenceNo, runNo, message);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function fillFailedRuns(result: ModelResult, runs: number, error: string) {
+  for (let s = 0; s < SENTENCES.length; s += 1) {
+    for (let r = 1; r <= runs; r += 1) {
+      result.runs.push(makeFailedRun(s + 1, r, error));
+    }
+  }
+}
+
+function makeFailedRun(sentenceNo: number, runNo: number, error: string): TtsRunEntry {
   return {
     model: undefined,
     sentenceNo,
@@ -444,12 +667,19 @@ function makeFailedRun(sentenceNo, runNo, error) {
 
 // Drive a single (sentence, run) on the shared socket. runState is held in the
 // caller via get/set accessors so the socket-level message handler can mutate it.
-async function runOne(ws, sentenceNo, runNo, sentence, timeoutMs, getRunState, setRunState) {
+async function runOne(
+  ws: WebSocket,
+  sentenceNo: number,
+  runNo: number,
+  sentence: string,
+  timeoutMs: number,
+  setRunState: (state: ActiveRunState) => void,
+): Promise<TtsRunEntry> {
   if (ws.readyState !== WebSocket.OPEN) {
     return makeFailedRun(sentenceNo, runNo, 'Socket not open');
   }
 
-  const state = {
+  const state: ActiveRunState = {
     sentenceNo,
     runNo,
     sentence,
@@ -491,7 +721,7 @@ async function runOne(ws, sentenceNo, runNo, sentence, timeoutMs, getRunState, s
 
   // Wait until the run settles: a tts.failed, a socket close, the quiet period
   // after the last audio_output.done, or the per-run timeout.
-  await new Promise((resolve) => {
+  await new Promise<void>((resolve) => {
     const deadline = state.commitAt + timeoutMs;
     const tick = () => {
       if (state.settled) return resolve();
@@ -518,8 +748,8 @@ async function runOne(ws, sentenceNo, runNo, sentence, timeoutMs, getRunState, s
   return finalize(state);
 }
 
-function finalize(state) {
-  const out = {
+function finalize(state: ActiveRunState): TtsRunEntry {
+  const out: TtsRunEntry = {
     sentenceNo: state.sentenceNo,
     runNo: state.runNo,
     sentence: state.sentence,
@@ -548,18 +778,19 @@ function finalize(state) {
 
 // ---------- aggregation / reporting ----------
 
-function summarize(modelResult) {
+function summarize(modelResult: ModelResult): ModelSummary {
   const ok = modelResult.runs.filter((r) => r.status === 'ok');
   const errs = modelResult.runs.filter((r) => r.status === 'error');
   const firstAudio = ok
     .map((r) => r.firstAudioMs)
-    .filter((v) => v != null);
-  const done = ok.map((r) => r.doneMs).filter((v) => v != null);
-  const audio = ok.map((r) => r.audioSeconds).filter((v) => v != null);
-  const rtf = ok.map((r) => r.rtf).filter((v) => v != null);
+    .filter((v): v is number => v != null);
+  const done = ok.map((r) => r.doneMs).filter((v): v is number => v != null);
+  const audio = ok.map((r) => r.audioSeconds).filter((v): v is number => v != null);
+  const rtf = ok.map((r) => r.rtf).filter((v): v is number => v != null);
   return {
     model: modelResult.model,
     voice: modelResult.voice,
+    delivery: modelResult.delivery,
     status: modelResult.status,
     sessionMs: modelResult.sessionMs,
     runs: modelResult.runs.length,
@@ -574,7 +805,7 @@ function summarize(modelResult) {
   };
 }
 
-function printModelTable(modelResult) {
+function printModelTable(modelResult: ModelResult) {
   const cols = ['#', 'run', 'firstAudioMs', 'doneMs', 'audioSec', 'rtf'];
   const rows = modelResult.runs.map((r) => [
     String(r.sentenceNo),
@@ -587,7 +818,7 @@ function printModelTable(modelResult) {
   const widths = cols.map((c, i) =>
     Math.max(c.length, ...rows.map((r) => r[i].length)),
   );
-  const pad = (cells) =>
+  const pad = (cells: string[]) =>
     cells.map((c, i) => String(c).padEnd(widths[i], ' ')).join('  ');
   const sep = widths.map((w) => '-'.repeat(w)).join('  ');
   console.log(pad(cols));
@@ -598,10 +829,11 @@ function printModelTable(modelResult) {
   }
 }
 
-function printSummaryTable(summaries) {
-  const cols = ['Model', 'Voice', 'OK', 'sessionMs', 'firstAudio(ms)', 'done(ms)', 'audio(s)', 'rtf'];
+function printSummaryTable(summaries: ModelSummary[]) {
+  const cols = ['Model', 'Delivery', 'Voice', 'OK', 'sessionMs', 'firstAudio(ms)', 'done(ms)', 'audio(s)', 'rtf'];
   const data = summaries.map((s) => [
     trunc(s.model, 34),
+    s.delivery,
     s.voice ?? '(default)',
     `${s.ok}/${s.runs}`,
     s.status === 'failed' ? 'FAIL' : fmtMs(s.sessionMs),
@@ -613,7 +845,7 @@ function printSummaryTable(summaries) {
   const widths = cols.map((c, i) =>
     Math.max(c.length, ...data.map((r) => r[i].length)),
   );
-  const pad = (cells) =>
+  const pad = (cells: string[]) =>
     cells.map((c, i) => String(c).padEnd(widths[i], ' ')).join('  ');
   const sep = widths.map((w) => '-'.repeat(w)).join('  ');
   console.log(pad(cols));
@@ -628,11 +860,11 @@ function printSummaryTable(summaries) {
 // ---------- main ----------
 
 async function main() {
-  let args;
+  let args: CliArgs;
   try {
     args = parseArgs(process.argv.slice(2));
   } catch (e) {
-    console.error(e.message);
+    console.error(e instanceof Error ? e.message : String(e));
     printHelp();
     process.exit(2);
   }
@@ -665,18 +897,18 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('Together realtime TTS websocket benchmark');
+  console.log('Together TTS latency benchmark');
   console.log('─'.repeat(53));
   console.log(`Models      : ${models.length} (${models.join(', ')})`);
   console.log(`Sentences   : ${SENTENCES.length}`);
   console.log(`Runs        : ${args.runs} per (model, sentence)`);
   console.log(`Timeout     : ${args.timeout} ms per run`);
-  console.log(`Endpoint    : ${WS_ENDPOINT}`);
+  console.log(`Endpoints   : ${WS_ENDPOINT} / ${REST_ENDPOINT}`);
   console.log(`Total runs  : ${models.length * SENTENCES.length * args.runs}`);
   console.log('─'.repeat(53));
 
   const startedAt = Date.now();
-  const modelResults = [];
+  const modelResults: ModelResult[] = [];
   for (const model of models) {
     console.log(`\nModel: ${model}`);
     const res = await runModel(model, args.runs, args.timeout, apiKey);
@@ -734,7 +966,8 @@ async function main() {
       fs.writeFileSync(file, JSON.stringify(payload, null, 2) + '\n');
       console.log(`\nJSON written: ${file}`);
     } catch (e) {
-      console.error(`\nFailed to write JSON: ${e.message}`);
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(`\nFailed to write JSON: ${message}`);
     }
   }
 
@@ -749,6 +982,6 @@ async function main() {
 main()
   .then(() => process.exit(0))
   .catch((e) => {
-    console.error(`Fatal: ${e?.stack || e}`);
+    console.error(`Fatal: ${e instanceof Error ? e.stack || e.message : String(e)}`);
     process.exit(1);
   });

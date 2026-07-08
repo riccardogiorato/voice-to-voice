@@ -574,7 +574,9 @@ export default function Home() {
                 <dl className="mt-4 space-y-3 text-sm">
                   <div className="flex items-center justify-between gap-4">
                     <dt className="text-[#050505]/52">Speech to text</dt>
-                    <dd className="font-medium text-[#050505]">Whisper large v3</dd>
+                    <dd className="text-right font-medium text-[#050505]">
+                      Nemotron 3 / Whisper
+                    </dd>
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <dt className="text-[#050505]/52">Response</dt>
@@ -582,7 +584,7 @@ export default function Home() {
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <dt className="text-[#050505]/52">Voice</dt>
-                    <dd className="font-medium text-[#050505]">Kokoro</dd>
+                    <dd className="font-medium text-[#050505]">Orpheus / Kokoro</dd>
                   </div>
                 </dl>
               </div>

@@ -24,10 +24,13 @@ TOGETHER_API_KEY=...
 Optional model overrides:
 
 ```bash
-TOGETHER_STT_MODEL=openai/whisper-large-v3
+TOGETHER_STT_MODEL=nvidia/nemotron-3-asr-streaming-0.6b
+TOGETHER_STT_FALLBACK_MODEL=openai/whisper-large-v3
 TOGETHER_CHAT_MODEL=Qwen/Qwen2.5-7B-Instruct-Turbo
-TOGETHER_TTS_MODEL=hexgrad/Kokoro-82M
-TOGETHER_TTS_VOICE=af_heart
+TOGETHER_TTS_MODEL=canopylabs/orpheus-3b-0.1-ft
+TOGETHER_TTS_VOICE=tara
+TOGETHER_TTS_FALLBACK_MODEL=hexgrad/Kokoro-82M
+TOGETHER_TTS_FALLBACK_VOICE=af_heart
 ```
 
 `Qwen/Qwen2.5-7B-Instruct-Turbo` is the default chat model because it reliably streams speakable assistant text for short voice turns. The route keeps `max_tokens` tight and forwards text to TTS sentence by sentence so the UI can show text while audio is generated.

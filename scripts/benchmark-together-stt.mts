@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/benchmark-together-stt.mjs
+// scripts/benchmark-together-stt.mts
 //
 // Realtime speech-to-text latency + accuracy benchmark for Together realtime
 // transcription models over the WebSocket API
@@ -32,13 +32,13 @@
 // node: builtin. Requires Node 20+ (global fetch, performance, Buffer, ws).
 //
 // Usage:
-//   TOGETHER_API_KEY=... node scripts/benchmark-together-stt.mjs
-//   node scripts/benchmark-together-stt.mjs --models "openai/whisper-large-v3" --runs 3
-//   STT_BENCH_MODELS="a,b" node scripts/benchmark-together-stt.mjs --runs 5
+//   TOGETHER_API_KEY=... node scripts/benchmark-together-stt.mts
+//   node scripts/benchmark-together-stt.mts --models "openai/whisper-large-v3" --runs 3
+//   STT_BENCH_MODELS="a,b" node scripts/benchmark-together-stt.mts --runs 5
 //
 // Reads TOGETHER_API_KEY from process.env. Also tries to load ./.env when the
 // key is not already exported, so the project's gitignored .env works out of
-// the box. Models default to ['openai/whisper-large-v3']; override with
+// the box. Models default to Together's current serverless transcribe catalog; override with
 // --models (wins) or the STT_BENCH_MODELS env var (comma-separated).
 
 import fs from 'node:fs';
@@ -46,11 +46,73 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import WebSocket from 'ws';
 
+type CliArgs = {
+  models: string[] | null;
+  runs: number;
+  help: boolean;
+};
+
+type FixtureDefinition = {
+  name: string;
+  text: string;
+};
+
+type PreparedFixture = FixtureDefinition & {
+  index: number;
+  path: string;
+  bytes: number;
+  chunks: string[];
+};
+
+type RunStatus = 'ok' | 'error';
+
+type RunState = {
+  finished: boolean;
+  status: RunStatus;
+  error: string | null;
+  transcript: string;
+  tStreamStart: number | null;
+  tCommit: number | null;
+  tFirstDelta: number | null;
+  tFinal: number | null;
+};
+
+type RunResult = {
+  model: string;
+  fixtureIndex: number;
+  fixture: string;
+  groundTruth: string;
+  run: number;
+  status: RunStatus;
+  commitToFinalMs: number | null;
+  firstDeltaMs: number | null;
+  transcript: string;
+  wer: number | null;
+  error: string | null;
+  totalElapsedMs: number;
+};
+
+type ModelSummary = {
+  model: string;
+  runs: number;
+  ok: number;
+  errors: number;
+  medianCommitToFinalMs: number | null;
+  meanWer: number | null;
+  lastError: string | null;
+  runsData: RunResult[];
+};
+
 // ---------- constants ----------
 
-// Default realtime transcription model catalog (override with --models /
-// STT_BENCH_MODELS).
-const DEFAULT_MODELS = ['openai/whisper-large-v3'];
+// Together serverless transcribe catalog, verified against /v1/models on
+// 2026-07-08. Override with --models / STT_BENCH_MODELS for ad hoc tests.
+const DEFAULT_MODELS = [
+  'openai/whisper-large-v3',
+  'nvidia/parakeet-tdt-0.6b-v3',
+  'nvidia/nemotron-3.5-asr-streaming-0.6b',
+  'nvidia/nemotron-3-asr-streaming-0.6b',
+];
 
 const WS_BASE = 'wss://api.together.ai/v1/realtime';
 const INTENT = 'transcription';
@@ -76,7 +138,7 @@ const CHUNK_INTERVAL_MS = 80; // stream chunks in real time
 const OUT_DIR = 'bench-results';
 
 // Three utterances with known ground-truth text.
-const FIXTURES = [
+const FIXTURES: FixtureDefinition[] = [
   { name: 'stt-bench-1.pcm', text: 'Hello! How are you doing today?' },
   { name: 'stt-bench-2.pcm', text: 'What is the fastest open source language model right now?' },
   { name: 'stt-bench-3.pcm', text: 'Please summarize the plot of Romeo and Juliet in one sentence.' },
@@ -84,8 +146,8 @@ const FIXTURES = [
 
 // ---------- dotenv loader (matches scripts/benchmark-together-chat.mjs) ----------
 
-function loadDotEnv(file) {
-  let text;
+function loadDotEnv(file: string) {
+  let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch {
@@ -110,10 +172,10 @@ function loadDotEnv(file) {
 
 // ---------- CLI ----------
 
-function parseArgs(argv) {
-  const a = { models: null, runs: 3, help: false };
+function parseArgs(argv: string[]): CliArgs {
+  const a: CliArgs = { models: null, runs: 3, help: false };
   const rest = [...argv];
-  const need = (name) => {
+  const need = (name: string) => {
     const v = rest.shift();
     if (v === undefined) throw new Error(`Missing value for ${name}`);
     return v;
@@ -142,10 +204,10 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`benchmark-together-stt.mjs - Together realtime STT latency + accuracy benchmark
+  console.log(`benchmark-together-stt.mts - Together realtime STT latency + accuracy benchmark
 
 Usage:
-  node scripts/benchmark-together-stt.mjs [options]
+  node scripts/benchmark-together-stt.mts [options]
 
 Options:
   --models "a,b,c"   Comma-separated realtime transcription model ids to benchmark
@@ -170,27 +232,27 @@ Notes:
 
 // ---------- formatting helpers (aligned-column style of the chat benchmark) ----------
 
-function median(arr) {
+function median(arr: number[]) {
   if (!arr.length) return null;
   const s = [...arr].sort((x, y) => x - y);
   const mid = Math.floor(s.length / 2);
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-function mean(arr) {
+function mean(arr: number[]) {
   if (!arr.length) return null;
   return arr.reduce((x, y) => x + y, 0) / arr.length;
 }
 
-const fmtMs = (v) => (v == null ? '-' : Math.round(v).toLocaleString('en-US'));
-const fmtPct = (v) => (v == null ? '-' : `${(v * 100).toFixed(1)}%`);
+const fmtMs = (v: number | null) => (v == null ? '-' : Math.round(v).toLocaleString('en-US'));
+const fmtPct = (v: number | null) => (v == null ? '-' : `${(v * 100).toFixed(1)}%`);
 
-function trunc(s, n) {
-  s = String(s ?? '');
-  return s.length <= n ? s : s.slice(0, n - 1) + '…';
+function trunc(s: unknown, n: number): string {
+  const text = String(s ?? '');
+  return text.length <= n ? text : text.slice(0, n - 1) + '…';
 }
 
-function printRunsTable(rows) {
+function printRunsTable(rows: RunResult[]) {
   const cols = ['fixture', 'run', 'commitToFinalMs', 'WER', 'transcript'];
   const data = rows.map((r) => [
     r.fixture,
@@ -202,7 +264,7 @@ function printRunsTable(rows) {
   const widths = cols.map((c, i) =>
     Math.max(c.length, ...data.map((r) => r[i].length)),
   );
-  const pad = (cells) =>
+  const pad = (cells: string[]) =>
     cells.map((c, i) => String(c).padEnd(widths[i], ' ')).join('  ');
   const sep = widths.map((w) => '-'.repeat(w)).join('  ');
   console.log(pad(cols));
@@ -210,7 +272,7 @@ function printRunsTable(rows) {
   for (const r of data) console.log(pad(r));
 }
 
-function printSummaryTable(summaries) {
+function printSummaryTable(summaries: ModelSummary[]) {
   const cols = ['Model', 'OK', 'Median commitToFinal(ms)', 'Mean WER'];
   const data = summaries.map((s) => [
     trunc(s.model, 46),
@@ -221,7 +283,7 @@ function printSummaryTable(summaries) {
   const widths = cols.map((c, i) =>
     Math.max(c.length, ...data.map((r) => r[i].length)),
   );
-  const pad = (cells) =>
+  const pad = (cells: string[]) =>
     cells.map((c, i) => String(c).padEnd(widths[i], ' ')).join('  ');
   const sep = widths.map((w) => '-'.repeat(w)).join('  ');
   console.log(pad(cols));
@@ -236,7 +298,7 @@ function printSummaryTable(summaries) {
 
 // Lowercase, strip punctuation (remove non-alphanumeric / non-space chars),
 // collapse whitespace, split into words.
-function normalizeWords(text) {
+function normalizeWords(text: unknown): string[] {
   const s = String(text ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, '')
@@ -246,15 +308,15 @@ function normalizeWords(text) {
 }
 
 // Word-level Levenshtein distance between two word arrays (two rolling rows).
-function levenshtein(a, b) {
+function levenshtein(a: string[], b: string[]): number {
   const m = a.length;
   const n = b.length;
   if (m === 0) return n;
   if (n === 0) return m;
-  let prev = new Array(n + 1);
+  let prev = new Array<number>(n + 1);
   for (let j = 0; j <= n; j += 1) prev[j] = j;
   for (let i = 1; i <= m; i += 1) {
-    const cur = new Array(n + 1);
+    const cur = new Array<number>(n + 1);
     cur[0] = i;
     for (let j = 1; j <= n; j += 1) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
@@ -267,7 +329,7 @@ function levenshtein(a, b) {
 
 // WER = word-level edit distance / reference word count. Returns null when the
 // reference has no words (would divide by zero).
-function computeWer(reference, hypothesis) {
+function computeWer(reference: string, hypothesis: string): number | null {
   const ref = normalizeWords(reference);
   const hyp = normalizeWords(hypothesis);
   if (ref.length === 0) return hyp.length === 0 ? 0 : null;
@@ -282,7 +344,7 @@ function computeWer(reference, hypothesis) {
 // 24 kHz response down to 16 kHz with linear interpolation. The resample block
 // below is duplicated verbatim from ensureFixture() in
 // scripts/e2e-voice-latency.mjs (do not import from it or modify it).
-async function ensureFixture(fixture, apiKey) {
+async function ensureFixture(fixture: FixtureDefinition, apiKey: string) {
   const fixturePath = path.join('test-fixtures', fixture.name);
   if (fs.existsSync(fixturePath)) return;
 
@@ -346,8 +408,8 @@ async function ensureFixture(fixture, apiKey) {
 }
 
 // Split the 16 kHz s16le fixture buffer into 80 ms (2560-byte) base64 chunks.
-function buildChunks(pcmBuffer) {
-  const chunks = [];
+function buildChunks(pcmBuffer: Buffer) {
+  const chunks: string[] = [];
   for (let off = 0; off < pcmBuffer.length; off += CHUNK_BYTES) {
     const end = Math.min(off + CHUNK_BYTES, pcmBuffer.length);
     chunks.push(pcmBuffer.subarray(off, end).toString('base64'));
@@ -357,7 +419,14 @@ function buildChunks(pcmBuffer) {
 
 // ---------- per-run websocket turn ----------
 
-function buildResult(model, fixture, fixtureIndex, runIndex, state, runStart) {
+function buildResult(
+  model: string,
+  fixture: PreparedFixture,
+  fixtureIndex: number,
+  runIndex: number,
+  state: RunState,
+  runStart: number,
+): RunResult {
   const totalElapsedMs = performance.now() - runStart;
   const commitToFinalMs =
     state.tFinal != null && state.tCommit != null ? state.tFinal - state.tCommit : null;
@@ -388,8 +457,14 @@ function buildResult(model, fixture, fixtureIndex, runIndex, state, runStart) {
 // a result object. Any failure (socket error, 30 s timeout, transcription.failed,
 // generic {type:'error'}) is captured as status:'error' and the benchmark
 // continues; the socket is closed cleanly before resolving.
-function runOne(model, fixture, fixtureIndex, runIndex, apiKey) {
-  return new Promise((resolve) => {
+function runOne(
+  model: string,
+  fixture: PreparedFixture,
+  fixtureIndex: number,
+  runIndex: number,
+  apiKey: string,
+) {
+  return new Promise<RunResult>((resolve) => {
     const wsUrl =
       `${WS_BASE}?intent=${INTENT}` +
       `&model=${encodeURIComponent(model)}` +
@@ -398,7 +473,7 @@ function runOne(model, fixture, fixtureIndex, runIndex, apiKey) {
     const chunks = fixture.chunks;
     const runStart = performance.now();
 
-    const state = {
+    const state: RunState = {
       finished: false,
       status: 'error',
       error: null,
@@ -412,14 +487,14 @@ function runOne(model, fixture, fixtureIndex, runIndex, apiKey) {
     const ws = new WebSocket(wsUrl, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
-    let timer = null;
+    let timer: NodeJS.Timeout | null = null;
 
-    const finish = (status, error) => {
+    const finish = (status: RunStatus, error?: string) => {
       if (state.finished) return;
       state.finished = true;
       state.status = status;
       if (error) state.error = error;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       try {
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
           ws.close(1000, 'client done');
@@ -433,7 +508,7 @@ function runOne(model, fixture, fixtureIndex, runIndex, apiKey) {
 
     timer = setTimeout(() => finish('error', `Timeout after ${CONN_TIMEOUT_MS}ms`), CONN_TIMEOUT_MS);
 
-    const safeSend = (obj) => {
+    const safeSend = (obj: Record<string, unknown>) => {
       if (ws.readyState !== WebSocket.OPEN) return;
       try {
         ws.send(JSON.stringify(obj));
@@ -442,8 +517,13 @@ function runOne(model, fixture, fixtureIndex, runIndex, apiKey) {
       }
     };
 
-    const onMessage = (data) => {
-      let event;
+    const onMessage = (data: WebSocket.RawData) => {
+      let event: {
+        type?: string;
+        transcript?: string;
+        message?: string;
+        error?: { message?: string };
+      };
       try {
         event = JSON.parse(data.toString());
       } catch {
@@ -496,11 +576,11 @@ function runOne(model, fixture, fixtureIndex, runIndex, apiKey) {
 
 // ---------- aggregation ----------
 
-function summarize(model, runs) {
+function summarize(model: string, runs: RunResult[]): ModelSummary {
   const ok = runs.filter((r) => r.status === 'ok');
   const errs = runs.filter((r) => r.status === 'error');
-  const commitVals = ok.map((r) => r.commitToFinalMs).filter((v) => v != null);
-  const werVals = ok.map((r) => r.wer).filter((v) => v != null);
+  const commitVals = ok.map((r) => r.commitToFinalMs).filter((v): v is number => v != null);
+  const werVals = ok.map((r) => r.wer).filter((v): v is number => v != null);
   return {
     model,
     runs: runs.length,
@@ -516,11 +596,11 @@ function summarize(model, runs) {
 // ---------- main ----------
 
 async function main() {
-  let args;
+  let args: CliArgs;
   try {
     args = parseArgs(process.argv.slice(2));
   } catch (e) {
-    console.error(e.message);
+    console.error(e instanceof Error ? e.message : String(e));
     printHelp();
     process.exit(2);
   }
@@ -557,7 +637,7 @@ async function main() {
     try {
       await ensureFixture(f, apiKey);
     } catch (e) {
-      console.error(e.message);
+      console.error(e instanceof Error ? e.message : String(e));
       process.exit(1);
     }
   }
@@ -590,7 +670,7 @@ async function main() {
 
   const startedAt = Date.now();
   let doneCount = 0;
-  const summaries = [];
+  const summaries: ModelSummary[] = [];
 
   for (const model of models) {
     const modelRuns = [];
@@ -677,7 +757,8 @@ async function main() {
     fs.writeFileSync(file, JSON.stringify(payload, null, 2) + '\n');
     console.log(`\nJSON written: ${file}`);
   } catch (e) {
-    console.error(`\nFailed to write JSON: ${e.message}`);
+    const message = e instanceof Error ? e.message : String(e);
+    console.error(`\nFailed to write JSON: ${message}`);
   }
 
   const totalOk = summaries.reduce((s, m) => s + m.ok, 0);

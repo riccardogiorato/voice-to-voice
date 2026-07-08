@@ -4,13 +4,27 @@ import WebSocket from "ws";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const STT_MODEL = envOrDefault("TOGETHER_STT_MODEL", "openai/whisper-large-v3");
+const STT_MODEL = envOrDefault(
+  "TOGETHER_STT_MODEL",
+  "nvidia/nemotron-3-asr-streaming-0.6b",
+);
+const STT_FALLBACK_MODEL = envOrDefault(
+  "TOGETHER_STT_FALLBACK_MODEL",
+  "openai/whisper-large-v3",
+);
 const CHAT_MODEL = envOrDefault(
   "TOGETHER_CHAT_MODEL",
   "Qwen/Qwen2.5-7B-Instruct-Turbo",
 );
-const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "hexgrad/Kokoro-82M");
-const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "af_heart");
+const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "canopylabs/orpheus-3b-0.1-ft");
+const TTS_VOICE = envOrDefault("TOGETHER_TTS_VOICE", "tara");
+const TTS_FALLBACK_MODEL = envOrDefault("TOGETHER_TTS_FALLBACK_MODEL", "hexgrad/Kokoro-82M");
+const TTS_FALLBACK_VOICE = envOrDefault("TOGETHER_TTS_FALLBACK_VOICE", "af_heart");
+const STT_MODELS = uniqueNonEmpty([STT_MODEL, STT_FALLBACK_MODEL]);
+const TTS_MODELS = uniqueTtsConfigs([
+  { model: TTS_MODEL, voice: TTS_VOICE },
+  { model: TTS_FALLBACK_MODEL, voice: TTS_FALLBACK_VOICE },
+]);
 
 type ClientEvent =
   | { type: "conversation.start"; history?: { role: string; text: string }[] }
@@ -29,7 +43,8 @@ const systemPrompt =
   "You are Together Voice, a warm, concise voice assistant demo built by Together AI. " +
   "Together AI is an AI acceleration cloud: it serves 200+ open-source models with fast inference APIs, " +
   "plus fine-tuning and GPU clusters. This demo runs entirely on Together AI models: " +
-  "Whisper transcribes the user's speech, an open chat model writes your replies, and Kokoro speaks them. " +
+  "NVIDIA Nemotron transcribes the user's speech, an open chat model writes your replies, and Orpheus speaks them. " +
+  "Whisper and Kokoro are configured as fallbacks. " +
   "If asked about Together AI, Together Voice, or this app, answer from those facts only. " +
   "Answer naturally in one or two short spoken sentences. Spell out numbers and abbreviations. No markdown.";
 
@@ -88,6 +103,10 @@ class VoiceSession {
   private expiryTimer?: NodeJS.Timeout;
   private sttReconnects = 0;
   private ttsReconnects = 0;
+  private sttModelIndex = 0;
+  private ttsModelIndex = 0;
+  private sttFallbackPending = false;
+  private ttsFallbackPending = false;
 
   constructor(private client: WebSocket) {}
 
@@ -123,9 +142,10 @@ class VoiceSession {
   }
 
   private connectStt() {
+    const model = STT_MODELS[this.sttModelIndex] ?? STT_MODELS[0];
     const url = new URL("wss://api.together.ai/v1/realtime");
     url.searchParams.set("intent", "transcription");
-    url.searchParams.set("model", STT_MODEL);
+    url.searchParams.set("model", model);
     url.searchParams.set("input_audio_format", "pcm_s16le_16000");
     url.searchParams.set("turn_detection", "none");
     url.searchParams.set("max_speech_duration_s", "8");
@@ -136,11 +156,11 @@ class VoiceSession {
 
     this.stt.on("open", () => this.send("state", { state: "listening" }));
     this.stt.on("message", (data) => this.handleSttMessage(data));
-    this.stt.on("error", () =>
-      this.send("error", { message: "Together realtime STT connection failed." }),
-    );
+    this.stt.on("error", () => {});
     this.stt.on("close", () => {
       if (this.stopped) return;
+      if (this.sttFallbackPending) return;
+      if (this.fallbackStt("Speech service disconnected.")) return;
       if (this.sttReconnects >= 2) {
         this.send("error", { message: "Speech service disconnected." });
         return;
@@ -153,9 +173,10 @@ class VoiceSession {
   }
 
   private connectTts() {
+    const config = TTS_MODELS[this.ttsModelIndex] ?? TTS_MODELS[0];
     const url = new URL("wss://api.together.ai/v1/audio/speech/websocket");
-    url.searchParams.set("model", TTS_MODEL);
-    url.searchParams.set("voice", TTS_VOICE);
+    url.searchParams.set("model", config.model);
+    url.searchParams.set("voice", config.voice);
     url.searchParams.set("response_format", "pcm");
     url.searchParams.set("sample_rate", "24000");
     url.searchParams.set("segment", "sentence");
@@ -166,12 +187,12 @@ class VoiceSession {
     });
 
     this.tts.on("message", (data) => this.handleTtsMessage(data));
-    this.tts.on("error", () =>
-      this.send("error", { message: "Together realtime TTS connection failed." }),
-    );
+    this.tts.on("error", () => {});
     this.tts.on("close", () => {
       if (this.stopped) return;
       this.ttsReady = false;
+      if (this.ttsFallbackPending) return;
+      if (this.fallbackTts("Voice service disconnected.")) return;
       if (this.ttsReconnects >= 2) {
         this.send("error", { message: "Voice service disconnected." });
         return;
@@ -279,9 +300,53 @@ class VoiceSession {
     }
 
     if (message.type === "conversation.item.tts.failed") {
+      if (this.fallbackTts("Voice generation failed.")) return;
       this.send("error", { message: message.error?.message ?? "TTS failed." });
       this.send("state", { state: "listening" });
     }
+  }
+
+  private fallbackStt(reason: string) {
+    if (this.sttModelIndex >= STT_MODELS.length - 1) return false;
+
+    this.sttModelIndex += 1;
+    this.sttReconnects = 0;
+    this.sttFallbackPending = true;
+    const model = STT_MODELS[this.sttModelIndex];
+    this.send("error", { message: `${reason} Falling back to ${model}.` });
+
+    try {
+      this.stt?.close();
+    } catch {}
+
+    setTimeout(() => {
+      this.sttFallbackPending = false;
+      if (!this.stopped) this.connectStt();
+    }, 250);
+    return true;
+  }
+
+  private fallbackTts(reason: string) {
+    if (this.ttsModelIndex >= TTS_MODELS.length - 1) return false;
+
+    this.ttsModelIndex += 1;
+    this.ttsReconnects = 0;
+    this.ttsReady = false;
+    this.ttsFallbackPending = true;
+    const config = TTS_MODELS[this.ttsModelIndex];
+    this.send("error", {
+      message: `${reason} Falling back to ${config.model}.`,
+    });
+
+    try {
+      this.tts?.close();
+    } catch {}
+
+    setTimeout(() => {
+      this.ttsFallbackPending = false;
+      if (!this.stopped) this.connectTts();
+    }, 250);
+    return true;
   }
 
   private forwardAudio(base64Float32: string, sampleRate: number) {
@@ -501,6 +566,26 @@ class VoiceSession {
 function envOrDefault(name: string, fallback: string) {
   const value = process.env[name]?.trim();
   return value && value.length > 0 ? value : fallback;
+}
+
+function uniqueNonEmpty(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function uniqueTtsConfigs(configs: { model: string; voice: string }[]) {
+  const seen = new Set<string>();
+  return configs.filter((config) => {
+    const model = config.model.trim();
+    const voice = config.voice.trim();
+    if (!model || !voice) return false;
+
+    const key = `${model}\0${voice}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    config.model = model;
+    config.voice = voice;
+    return true;
+  });
 }
 
 function compactErrorBody(body: string) {
