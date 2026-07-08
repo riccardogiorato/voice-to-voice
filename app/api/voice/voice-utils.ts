@@ -55,6 +55,7 @@ export const systemPrompt =
   "NVIDIA Nemotron transcribes the user's speech, an open chat model writes your replies, and Orpheus speaks them. " +
   "Whisper and Kokoro are configured as fallbacks. " +
   "If asked about Together AI, Together Voice, or this app, answer from those facts only. " +
+  "Always reply in the same language as the user's latest message; if the language is unclear, default to English. " +
   "Answer naturally in one or two short spoken sentences. Spell out numbers and abbreviations. No markdown.";
 
 export const transcriptRepairPrompt =
