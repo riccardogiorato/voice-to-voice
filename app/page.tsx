@@ -23,10 +23,37 @@ type TranscriptItem = Turn & {
   live?: boolean;
 };
 
+type VadDecision = {
+  probability: number;
+  isSpeech: boolean;
+};
+
+type TenVadModule = {
+  _ten_vad_create(handlePtr: number, hopSize: number, threshold: number): number;
+  _ten_vad_process(
+    handle: number,
+    audioDataPtr: number,
+    audioDataLength: number,
+    outProbabilityPtr: number,
+    outFlagPtr: number,
+  ): number;
+  _ten_vad_destroy(handlePtr: number): number;
+  _malloc(size: number): number;
+  _free(ptr: number): void;
+  HEAP16: Int16Array;
+  HEAP32: Int32Array;
+  HEAPF32: Float32Array;
+};
+
+type TenVadImport = {
+  default(options?: { locateFile?: (path: string) => string }): Promise<TenVadModule>;
+};
+
 type ServerEvent =
   | { type: "state"; state: Phase }
   | { type: "transcript.delta"; text: string }
-  | { type: "transcript.final"; text: string }
+  | { type: "transcript.final"; text: string; merged?: boolean }
+  | { type: "transcript.ignored"; text?: string }
   | { type: "assistant.delta"; text: string }
   | { type: "audio.delta"; audio: string; sampleRate: number }
   | { type: "audio.done" }
@@ -58,9 +85,15 @@ const phaseCopy: Record<Phase, { label: string; detail: string }> = {
 
 const SPEECH_RMS_THRESHOLD = 0.018;
 const BARGE_IN_RMS_THRESHOLD = 0.045;
-const SPEECH_HOLD_MS = 360;
+const VAD_SPEECH_HOLD_MS = 250;
+const RMS_SPEECH_HOLD_MS = 360;
+const MIN_SPEECH_MS = 280;
 const MIN_AUDIO_CHUNK_MS = 80;
 const PRE_ROLL_MS = 320;
+const VAD_OPEN_THRESHOLD = 0.62;
+const VAD_CLOSE_THRESHOLD = 0.38;
+const TEN_VAD_SAMPLE_RATE = 16_000;
+const TEN_VAD_HOP_SIZE = 256;
 
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -93,6 +126,9 @@ export default function Home() {
   const noiseFloorRef = useRef(0.008);
   const pendingPhaseRef = useRef<Phase | null>(null);
   const mutedRef = useRef(false);
+  const speechOpenedAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const tenVadRef = useRef<BrowserTenVad | null>(null);
+  const tenVadPromiseRef = useRef<Promise<BrowserTenVad | null> | null>(null);
 
   const isActive = phase !== "idle";
   const status =
@@ -134,6 +170,7 @@ export default function Home() {
   async function startConversation() {
     if (isActive) return;
 
+    void ensureTenVad();
     setError("");
     setPartial("");
     setAssistantDraft("");
@@ -199,16 +236,7 @@ export default function Home() {
 
   function handleServerEvent(event: ServerEvent) {
     if (event.type === "state") {
-      if (
-        event.state === "listening" &&
-        audioContextRef.current &&
-        nextPlayTimeRef.current > audioContextRef.current.currentTime + 0.05
-      ) {
-        pendingPhaseRef.current = "listening";
-        return;
-      }
-      pendingPhaseRef.current = null;
-      updatePhase(event.state);
+      deferPhaseUntilPlayback(event.state);
       return;
     }
 
@@ -220,7 +248,22 @@ export default function Home() {
     if (event.type === "transcript.final") {
       setPartial("");
       setAssistantDraft("");
-      setTurns((current) => [...current.slice(-5), { role: "user", text: event.text }]);
+      setTurns((current) => {
+        const next = current.slice(-5);
+        if (!event.merged) return [...next, { role: "user", text: event.text }];
+
+        if (next.at(-1)?.role === "assistant") next.pop();
+        const lastUserIndex = findLastTurnIndex(next, "user");
+        if (lastUserIndex === -1) return [...next, { role: "user", text: event.text }];
+
+        next[lastUserIndex] = { role: "user", text: event.text };
+        return next;
+      });
+      return;
+    }
+
+    if (event.type === "transcript.ignored") {
+      setPartial("");
       return;
     }
 
@@ -242,6 +285,7 @@ export default function Home() {
         }
         return "";
       });
+      deferPhaseUntilPlayback("listening");
       return;
     }
 
@@ -344,6 +388,10 @@ export default function Home() {
     preRollSamplesRef.current = 0;
     noiseFloorRef.current = 0.008;
     pendingPhaseRef.current = null;
+    speechOpenedAtRef.current = Number.NEGATIVE_INFINITY;
+    tenVadRef.current?.destroy();
+    tenVadRef.current = null;
+    tenVadPromiseRef.current = null;
   }
 
   function isAssistantAudioActive() {
@@ -380,17 +428,25 @@ export default function Home() {
     }
 
     const level = rms(input);
+    const vad = tenVadRef.current;
+    const vadDecision = vad?.process(input, sampleRate) ?? null;
+    const vadSpeech = vadDecision
+      ? vadDecision.probability >=
+        (speechOpenRef.current ? VAD_CLOSE_THRESHOLD : VAD_OPEN_THRESHOLD)
+      : null;
     const openThreshold = Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current * 3);
+    const hasSpeech = vadSpeech ?? level >= openThreshold;
 
     // eslint-disable-next-line react-hooks/purity -- runs in mic callbacks, never during render
     const now = performance.now();
-    if (level >= openThreshold) {
+    if (hasSpeech) {
       // Pre-roll must lead the opening frame or speech onsets are clipped.
       if (!speechOpenRef.current) {
         micBufferRef.current.push(...preRollRef.current);
         micBufferSamplesRef.current += preRollSamplesRef.current;
         preRollRef.current = [];
         preRollSamplesRef.current = 0;
+        speechOpenedAtRef.current = now;
       }
       lastSpeechAtRef.current = now;
       speechOpenRef.current = true;
@@ -409,15 +465,20 @@ export default function Home() {
       );
     }
 
-    const inSpeechTail = now - lastSpeechAtRef.current <= SPEECH_HOLD_MS;
+    const holdMs = vad ? VAD_SPEECH_HOLD_MS : RMS_SPEECH_HOLD_MS;
+    const inSpeechTail = now - lastSpeechAtRef.current <= holdMs;
     if (!inSpeechTail) {
-      flushSpeechAudio(socket, sampleRate);
+      const speechDuration = now - speechOpenedAtRef.current;
       if (speechOpenRef.current) {
-        socket.send(JSON.stringify({ type: "audio.commit" }));
+        if (speechDuration >= MIN_SPEECH_MS) {
+          flushSpeechAudio(socket, sampleRate);
+          socket.send(JSON.stringify({ type: "audio.commit" }));
+        }
         speechOpenRef.current = false;
       }
       micBufferRef.current = [];
       micBufferSamplesRef.current = 0;
+      speechOpenedAtRef.current = Number.NEGATIVE_INFINITY;
       return;
     }
 
@@ -437,6 +498,7 @@ export default function Home() {
     speechOpenRef.current = false;
     preRollRef.current = [];
     preRollSamplesRef.current = 0;
+    speechOpenedAtRef.current = Number.NEGATIVE_INFINITY;
   }
 
   function flushSpeechAudio(socket: WebSocket, sampleRate: number) {
@@ -466,6 +528,10 @@ export default function Home() {
     playbackSourcesRef.current = [];
     nextPlayTimeRef.current = audioContextRef.current?.currentTime ?? 0;
     pcmLeftoverRef.current = null;
+    if (pendingPhaseRef.current) {
+      updatePhase(pendingPhaseRef.current);
+      pendingPhaseRef.current = null;
+    }
   }
 
   function playPcm16(base64: string, sampleRate: number) {
@@ -494,6 +560,33 @@ export default function Home() {
         pendingPhaseRef.current = null;
       }
     };
+  }
+
+  function deferPhaseUntilPlayback(nextPhase: Phase) {
+    if (
+      nextPhase === "listening" &&
+      audioContextRef.current &&
+      nextPlayTimeRef.current > audioContextRef.current.currentTime + 0.05
+    ) {
+      pendingPhaseRef.current = "listening";
+      return;
+    }
+
+    pendingPhaseRef.current = null;
+    updatePhase(nextPhase);
+  }
+
+  function ensureTenVad() {
+    if (tenVadRef.current) return tenVadRef.current;
+    if (!tenVadPromiseRef.current) {
+      tenVadPromiseRef.current = loadBrowserTenVad()
+        .then((vad) => {
+          tenVadRef.current = vad;
+          return vad;
+        })
+        .catch(() => null);
+    }
+    return tenVadPromiseRef.current;
   }
 
   const transcriptItems = useMemo<TranscriptItem[]>(() => {
@@ -727,6 +820,105 @@ function getVoiceSocketUrl() {
   return `${protocol}//${window.location.host}/api/voice`;
 }
 
+async function loadBrowserTenVad() {
+  const modulePath = "/ten-vad/ten_vad.js";
+  const imported = (await import(/* webpackIgnore: true */ modulePath)) as TenVadImport;
+  const vadModule = await imported.default({
+    locateFile: (path) => `/ten-vad/${path}`,
+  });
+  return new BrowserTenVad(vadModule);
+}
+
+class BrowserTenVad {
+  private handle = 0;
+  private readonly handlePtr: number;
+  private readonly audioPtr: number;
+  private readonly probabilityPtr: number;
+  private readonly flagPtr: number;
+  private leftover = new Int16Array(0);
+  private destroyed = false;
+
+  constructor(private vadModule: TenVadModule) {
+    this.handlePtr = vadModule._malloc(4);
+    this.audioPtr = vadModule._malloc(TEN_VAD_HOP_SIZE * 2);
+    this.probabilityPtr = vadModule._malloc(4);
+    this.flagPtr = vadModule._malloc(4);
+
+    if (
+      vadModule._ten_vad_create(
+        this.handlePtr,
+        TEN_VAD_HOP_SIZE,
+        (VAD_OPEN_THRESHOLD + VAD_CLOSE_THRESHOLD) / 2,
+      ) !== 0
+    ) {
+      this.destroy();
+      throw new Error("TEN VAD failed to initialize.");
+    }
+
+    this.handle = vadModule.HEAP32[this.handlePtr >> 2];
+    if (!this.handle) {
+      this.destroy();
+      throw new Error("TEN VAD returned an empty handle.");
+    }
+  }
+
+  process(input: Float32Array, sampleRate: number): VadDecision | null {
+    if (this.destroyed) return null;
+
+    const pcm16 = downsampleToPcm16(input, sampleRate, TEN_VAD_SAMPLE_RATE);
+    const samples = concatInt16(this.leftover, pcm16);
+    let offset = 0;
+    let maxProbability = 0;
+    let isSpeech = false;
+    let frames = 0;
+
+    while (offset + TEN_VAD_HOP_SIZE <= samples.length) {
+      const frame = samples.subarray(offset, offset + TEN_VAD_HOP_SIZE);
+      this.vadModule.HEAP16.set(frame, this.audioPtr >> 1);
+
+      if (
+        this.vadModule._ten_vad_process(
+          this.handle,
+          this.audioPtr,
+          TEN_VAD_HOP_SIZE,
+          this.probabilityPtr,
+          this.flagPtr,
+        ) === 0
+      ) {
+        frames += 1;
+        const probability = this.vadModule.HEAPF32[this.probabilityPtr >> 2];
+        maxProbability = Math.max(maxProbability, probability);
+        isSpeech = isSpeech || this.vadModule.HEAP32[this.flagPtr >> 2] === 1;
+      }
+
+      offset += TEN_VAD_HOP_SIZE;
+    }
+
+    this.leftover = samples.slice(offset);
+    if (frames === 0) return null;
+    return { probability: maxProbability, isSpeech };
+  }
+
+  destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+
+    if (this.handle) this.vadModule._ten_vad_destroy(this.handlePtr);
+    this.vadModule._free(this.handlePtr);
+    this.vadModule._free(this.audioPtr);
+    this.vadModule._free(this.probabilityPtr);
+    this.vadModule._free(this.flagPtr);
+    this.leftover = new Int16Array(0);
+  }
+}
+
+function findLastTurnIndex(turns: Turn[], role: Turn["role"]) {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    if (turns[index].role === role) return index;
+  }
+  return -1;
+}
+
 function createMicWorkletUrl() {
   const source = `
     class MicCaptureProcessor extends AudioWorkletProcessor {
@@ -776,6 +968,53 @@ function concatFloat32(chunks: Float32Array[], totalLength: number) {
     offset += chunk.length;
   }
 
+  return output;
+}
+
+function downsampleToPcm16(input: Float32Array, fromRate: number, toRate: number) {
+  if (fromRate <= 0 || input.length === 0) return new Int16Array(0);
+
+  if (Math.abs(fromRate - toRate) < 1) {
+    const output = new Int16Array(input.length);
+    for (let index = 0; index < input.length; index += 1) {
+      output[index] = floatToPcm16Sample(input[index]);
+    }
+    return output;
+  }
+
+  const ratio = fromRate / toRate;
+  const outputLength = Math.max(1, Math.floor(input.length / ratio));
+  const output = new Int16Array(outputLength);
+
+  for (let index = 0; index < outputLength; index += 1) {
+    const start = Math.floor(index * ratio);
+    const end = Math.max(start + 1, Math.floor((index + 1) * ratio));
+    let sum = 0;
+    let count = 0;
+
+    for (let sampleIndex = start; sampleIndex < end && sampleIndex < input.length; sampleIndex += 1) {
+      sum += input[sampleIndex];
+      count += 1;
+    }
+
+    output[index] = floatToPcm16Sample(sum / Math.max(1, count));
+  }
+
+  return output;
+}
+
+function floatToPcm16Sample(input: number) {
+  const sample = Math.max(-1, Math.min(1, input));
+  return sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+}
+
+function concatInt16(left: Int16Array, right: Int16Array) {
+  if (left.length === 0) return right;
+  if (right.length === 0) return left;
+
+  const output = new Int16Array(left.length + right.length);
+  output.set(left, 0);
+  output.set(right, left.length);
   return output;
 }
 

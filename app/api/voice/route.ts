@@ -25,6 +25,15 @@ const TTS_MODELS = uniqueTtsConfigs([
   { model: TTS_MODEL, voice: TTS_VOICE },
   { model: TTS_FALLBACK_MODEL, voice: TTS_FALLBACK_VOICE },
 ]);
+const TRANSCRIPT_MERGE_WINDOW_MS = 1500;
+const GHOST_TRANSCRIPTS = new Set([
+  "you",
+  "thank you",
+  "thanks for watching",
+  "hmm",
+  "uh",
+  "um",
+]);
 
 type ClientEvent =
   | { type: "conversation.start"; history?: { role: string; text: string }[] }
@@ -107,6 +116,8 @@ class VoiceSession {
   private ttsModelIndex = 0;
   private sttFallbackPending = false;
   private ttsFallbackPending = false;
+  private lastUserTranscript = "";
+  private lastUserFinalAt = 0;
 
   constructor(private client: WebSocket) {}
 
@@ -179,8 +190,8 @@ class VoiceSession {
     url.searchParams.set("voice", config.voice);
     url.searchParams.set("response_format", "pcm");
     url.searchParams.set("sample_rate", "24000");
-    url.searchParams.set("segment", "sentence");
-    url.searchParams.set("max_partial_length", "160");
+    url.searchParams.set("segment", "immediate");
+    url.searchParams.set("max_partial_length", "80");
 
     this.tts = new WebSocket(url.toString(), {
       headers: { Authorization: `Bearer ${process.env.TOGETHER_API_KEY}` },
@@ -220,6 +231,8 @@ class VoiceSession {
     if (event.type === "conversation.reset") {
       this.cancelResponse();
       this.history = [];
+      this.lastUserTranscript = "";
+      this.lastUserFinalAt = 0;
       this.send("state", { state: "listening" });
       return;
     }
@@ -257,10 +270,30 @@ class VoiceSession {
     if (message.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = cleanTranscript(String(message.transcript ?? ""));
       if (transcript.length > 0) {
+        if (isGhostTranscript(transcript)) {
+          this.send("transcript.ignored", { text: transcript });
+          return;
+        }
+
         if (this.isDuplicateTranscript(transcript)) return;
 
-        this.send("transcript.final", { text: transcript });
-        void this.answer(transcript);
+        const now = Date.now();
+        const shouldMerge =
+          this.lastUserTranscript.length > 0 &&
+          now - this.lastUserFinalAt < TRANSCRIPT_MERGE_WINDOW_MS;
+        const finalTranscript = shouldMerge
+          ? mergeTranscriptText(this.lastUserTranscript, transcript)
+          : transcript;
+
+        if (shouldMerge) this.retractLastTurnForMerge();
+
+        this.lastUserTranscript = finalTranscript;
+        this.lastUserFinalAt = now;
+        this.send("transcript.final", {
+          text: finalTranscript,
+          merged: shouldMerge,
+        });
+        void this.answer(finalTranscript);
       }
       return;
     }
@@ -295,7 +328,6 @@ class VoiceSession {
 
     if (message.type === "conversation.item.audio_output.done") {
       this.send("audio.done", {});
-      this.send("state", { state: "listening" });
       return;
     }
 
@@ -390,6 +422,7 @@ class VoiceSession {
 
     let assistant = "";
     let sentence = "";
+    let firstSpeechChunkSent = false;
 
     try {
       const response = await fetch("https://api.together.ai/v1/chat/completions", {
@@ -430,8 +463,14 @@ class VoiceSession {
         sentence += delta;
         this.send("assistant.delta", { text: delta });
 
-        if (/[.!?]\s$/.test(sentence) || sentence.length > 150) {
+        const shouldSpeak =
+          (!firstSpeechChunkSent && shouldFlushFirstTtsChunk(sentence)) ||
+          /[.!?]\s$/.test(sentence) ||
+          sentence.length > 150;
+
+        if (shouldSpeak) {
           this.speak(sentence);
+          firstSpeechChunkSent = true;
           sentence = "";
         }
       }
@@ -455,6 +494,11 @@ class VoiceSession {
 
   private trimHistory() {
     if (this.history.length > 8) this.history = this.history.slice(-8);
+  }
+
+  private retractLastTurnForMerge() {
+    if (this.history.at(-1)?.role === "assistant") this.history.pop();
+    if (this.history.at(-1)?.role === "user") this.history.pop();
   }
 
   // Sessions are per-connection, so a stop/expiry/reconnect would otherwise
@@ -620,6 +664,27 @@ function cleanTranscript(transcript: string) {
   }
 
   return cleaned.join(" ").slice(0, 800).trim();
+}
+
+function isGhostTranscript(transcript: string) {
+  const normalized = normalizeTranscript(transcript);
+  if (!GHOST_TRANSCRIPTS.has(normalized)) return false;
+  return normalized.split(" ").length <= 3;
+}
+
+function mergeTranscriptText(previous: string, next: string) {
+  const trimmedPrevious = previous.trim();
+  const trimmedNext = next.trim();
+  if (!trimmedPrevious) return trimmedNext;
+  if (!trimmedNext) return trimmedPrevious;
+  return `${trimmedPrevious.replace(/[.?!,;:\s]+$/u, "")} ${trimmedNext}`;
+}
+
+function shouldFlushFirstTtsChunk(text: string) {
+  const trimmed = text.trim();
+  if (/[.!?]\s$/u.test(text)) return true;
+  if (trimmed.length >= 44) return true;
+  return trimmed.length >= 24 && /[,;:]\s*$/u.test(text);
 }
 
 function normalizeTranscript(transcript: string) {
