@@ -224,8 +224,11 @@ async function streamTogetherChat({
       }
 
       if (typeof delta.content === "string" && delta.content.length > 0) {
-        content += delta.content;
-        streamContent(delta.content);
+        const visibleContent = stripLeadingFinalMarker(delta.content, content);
+        if (visibleContent.length > 0) {
+          content += visibleContent;
+          streamContent(visibleContent);
+        }
       }
 
       if (Array.isArray(delta.tool_calls)) {
@@ -261,4 +264,9 @@ async function streamTogetherChat({
     toolCalls: [...toolCalls.values()],
     reasoningChars,
   };
+}
+
+function stripLeadingFinalMarker(delta: string, currentContent: string) {
+  if (currentContent.length > 0) return delta;
+  return delta.trim().toLowerCase() === "final" ? "" : delta;
 }

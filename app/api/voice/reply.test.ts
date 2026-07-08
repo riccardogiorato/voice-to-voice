@@ -94,6 +94,29 @@ test("does not stream assistant text from a tool-call planning turn", async () =
   expect(togetherCalls).toBe(2);
 });
 
+test("strips a leading final channel marker from reply deltas", async () => {
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    if (!url.includes("api.together.ai")) throw new Error(`Unexpected fetch: ${url}`);
+
+    return sseResponse([
+      { choices: [{ delta: { content: "final" } }] },
+      { choices: [{ delta: { content: "The alphabet is transcribing correctly." } }] },
+    ]);
+  }) as typeof fetch;
+
+  const deltas: string[] = [];
+  const reply = await generateAssistantReply({
+    history: [{ role: "user", content: "Say if the alphabet test worked." }],
+    transcript: "Say if the alphabet test worked.",
+    signal: new AbortController().signal,
+    onDelta: (delta) => deltas.push(delta),
+  });
+
+  expect(reply).toBe("The alphabet is transcribing correctly.");
+  expect(deltas).toEqual(["The alphabet is transcribing correctly."]);
+});
+
 function sseResponse(chunks: unknown[]) {
   const encoder = new TextEncoder();
   return new Response(

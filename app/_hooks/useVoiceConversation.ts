@@ -32,7 +32,7 @@ type DebugEntry = {
   payload?: unknown;
 };
 
-type PartialTranscript = {
+export type PartialTranscript = {
   text: string;
   baseText?: string;
 };
@@ -117,6 +117,7 @@ export function useVoiceConversation() {
   const tenVadPromiseRef = useRef<Promise<BrowserTenVad | null> | null>(null);
   const debugLogRef = useRef<DebugEntry[]>([]);
   const lastDebugPaintRef = useRef(0);
+  const pendingPlaybackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isActive = phase !== "idle";
 
@@ -252,16 +253,7 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "transcript.delta") {
-      setPartial(
-        isDisplayableTranscriptText(event.text)
-          ? {
-              text: event.text,
-              baseText: isDisplayableTranscriptText(event.baseText ?? "")
-                ? event.baseText
-                : undefined,
-            }
-          : null,
-      );
+      setPartial(getTranscriptPartialFromDelta(event));
       return;
     }
 
@@ -414,6 +406,7 @@ export function useVoiceConversation() {
     preRollSamplesRef.current = 0;
     noiseFloorRef.current = 0.008;
     pendingPhaseRef.current = null;
+    clearPendingPlaybackTimer();
     speechOpenedAtRef.current = Number.NEGATIVE_INFINITY;
     tenVadRef.current?.destroy();
     tenVadRef.current = null;
@@ -618,8 +611,7 @@ export function useVoiceConversation() {
     bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
     pcmLeftoverRef.current = null;
     if (pendingPhaseRef.current) {
-      updatePhase(pendingPhaseRef.current);
-      pendingPhaseRef.current = null;
+      flushPendingPhase();
     }
   }
 
@@ -736,8 +728,7 @@ export function useVoiceConversation() {
         (item) => item !== source,
       );
       if (pendingPhaseRef.current && !isAssistantAudioActive()) {
-        updatePhase(pendingPhaseRef.current);
-        pendingPhaseRef.current = null;
+        flushPendingPhase();
       }
     };
   }
@@ -749,11 +740,45 @@ export function useVoiceConversation() {
       nextPlayTimeRef.current > audioContextRef.current.currentTime + 0.05
     ) {
       pendingPhaseRef.current = "listening";
+      schedulePendingPlaybackFallback();
       return;
     }
 
+    clearPendingPlaybackTimer();
     pendingPhaseRef.current = null;
     updatePhase(nextPhase);
+  }
+
+  function schedulePendingPlaybackFallback() {
+    clearPendingPlaybackTimer();
+    const audioContext = audioContextRef.current;
+    if (!audioContext) return;
+
+    const delayMs =
+      Math.max(0, nextPlayTimeRef.current - audioContext.currentTime) * 1000 +
+      ASSISTANT_AUDIO_TAIL_MS +
+      80;
+
+    pendingPlaybackTimerRef.current = setTimeout(() => {
+      if (!pendingPhaseRef.current) return;
+      playbackSourcesRef.current = [];
+      assistantAudioBlockUntilRef.current = Number.NEGATIVE_INFINITY;
+      flushPendingPhase();
+    }, delayMs);
+  }
+
+  function flushPendingPhase() {
+    const nextPhase = pendingPhaseRef.current;
+    if (!nextPhase) return;
+    clearPendingPlaybackTimer();
+    pendingPhaseRef.current = null;
+    updatePhase(nextPhase);
+  }
+
+  function clearPendingPlaybackTimer() {
+    if (!pendingPlaybackTimerRef.current) return;
+    clearTimeout(pendingPlaybackTimerRef.current);
+    pendingPlaybackTimerRef.current = null;
   }
 
   function ensureTenVad() {
@@ -870,6 +895,23 @@ function normalizeTranscriptText(text: string) {
 
 function isDisplayableTranscriptText(text: string) {
   return /[\p{L}\p{N}]/u.test(text);
+}
+
+export function getTranscriptPartialFromDelta(event: {
+  text: string;
+  baseText?: string;
+}): PartialTranscript | null {
+  const text = event.text;
+  const baseText = event.baseText ?? "";
+  const hasDisplayableText = isDisplayableTranscriptText(text);
+  const hasDisplayableBase = isDisplayableTranscriptText(baseText);
+
+  if (!hasDisplayableText && !hasDisplayableBase) return null;
+
+  return {
+    text: hasDisplayableText ? text : "",
+    baseText: hasDisplayableBase ? baseText : undefined,
+  };
 }
 
 function sanitizeDebugPayload(payload: unknown): unknown {
