@@ -14,7 +14,7 @@ export const TRANSCRIPT_REPAIR_MODEL = envOrDefault(
   "TOGETHER_TRANSCRIPT_REPAIR_MODEL",
   "Qwen/Qwen3.5-9B",
 );
-const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "cartesia/sonic-3.5");
+const TTS_MODEL = envOrDefault("TOGETHER_TTS_MODEL", "cartesia/sonic-3");
 const TTS_VOICE = envOrDefault(
   "TOGETHER_TTS_VOICE",
   "47c38ca4-5f35-497b-b1a3-415245fb35e1",
