@@ -30,6 +30,12 @@ const VAD_OPEN_THRESHOLD = 0.62;
 const VAD_CLOSE_THRESHOLD = 0.38;
 const TEN_VAD_SAMPLE_RATE = 16_000;
 const TEN_VAD_HOP_SIZE = 256;
+const THINKING_BASE_GAIN = 0.012;
+
+export type ThinkingSoundHandle = {
+  setVolume: (volume: number) => void;
+  stop: () => void;
+};
 
 export function getVoiceSocketUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -175,6 +181,92 @@ export function clamp01(value: number) {
 export function normalizeRange(value: number, floor: number, ceiling: number) {
   if (ceiling <= floor) return 0;
   return clamp01((value - floor) / (ceiling - floor));
+}
+
+export function createThinkingSound(
+  audioContext: AudioContext,
+  volume = 1,
+): ThinkingSoundHandle {
+  const master = audioContext.createGain();
+  master.gain.value = 0;
+
+  const filter = audioContext.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 760;
+  filter.Q.value = 0.5;
+
+  const noiseBuffer = audioContext.createBuffer(
+    1,
+    Math.max(1, Math.floor(audioContext.sampleRate * 1.6)),
+    audioContext.sampleRate,
+  );
+  const noise = noiseBuffer.getChannelData(0);
+  for (let index = 0; index < noise.length; index += 1) {
+    noise[index] = (Math.random() * 2 - 1) * 0.18;
+  }
+
+  const noiseSource = audioContext.createBufferSource();
+  noiseSource.buffer = noiseBuffer;
+  noiseSource.loop = true;
+
+  const oscillator = audioContext.createOscillator();
+  oscillator.type = "sine";
+  oscillator.frequency.value = 174;
+
+  const toneGain = audioContext.createGain();
+  toneGain.gain.value = 0.018;
+
+  const lfo = audioContext.createOscillator();
+  lfo.type = "sine";
+  lfo.frequency.value = 0.42;
+
+  const lfoGain = audioContext.createGain();
+  lfoGain.gain.value = 0.005;
+
+  noiseSource.connect(filter);
+  filter.connect(master);
+  oscillator.connect(toneGain);
+  toneGain.connect(master);
+  lfo.connect(lfoGain);
+  lfoGain.connect(master.gain);
+  master.connect(audioContext.destination);
+
+  noiseSource.start();
+  oscillator.start();
+  lfo.start();
+
+  const setVolume = (nextVolume: number) => {
+    master.gain.setTargetAtTime(
+      THINKING_BASE_GAIN * clamp01(nextVolume),
+      audioContext.currentTime,
+      0.025,
+    );
+  };
+  setVolume(volume);
+
+  return {
+    setVolume,
+    stop: () => {
+      try {
+        master.gain.setTargetAtTime(0, audioContext.currentTime, 0.03);
+      } catch {}
+
+      setTimeout(() => {
+        try {
+          noiseSource.stop();
+        } catch {}
+        try {
+          oscillator.stop();
+        } catch {}
+        try {
+          lfo.stop();
+        } catch {}
+        try {
+          master.disconnect();
+        } catch {}
+      }, 90);
+    },
+  };
 }
 
 export function concatFloat32(chunks: Float32Array[], totalLength: number) {

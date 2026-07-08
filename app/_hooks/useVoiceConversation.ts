@@ -6,12 +6,14 @@ import {
   BrowserTenVad,
   concatFloat32,
   createMicWorkletUrl,
+  createThinkingSound,
   float32ToBase64,
   getVoiceSocketUrl,
   loadBrowserTenVad,
   clamp01,
   normalizeRange,
   rms,
+  type ThinkingSoundHandle,
 } from "@/app/_lib/client-audio";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
@@ -91,12 +93,7 @@ export function useVoiceConversation() {
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const silentGainRef = useRef<GainNode | null>(null);
   const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
-  const thinkingSoundRef = useRef<{
-    gain: GainNode;
-    lfo: OscillatorNode;
-    noise: AudioBufferSourceNode;
-    oscillator: OscillatorNode;
-  } | null>(null);
+  const thinkingSoundRef = useRef<ThinkingSoundHandle | null>(null);
   const nextPlayTimeRef = useRef(0);
   const phaseRef = useRef<Phase>("idle");
   const micBufferRef = useRef<Float32Array[]>([]);
@@ -638,85 +635,14 @@ export function useVoiceConversation() {
     const audioContext = audioContextRef.current;
     if (!audioContext || thinkingSoundRef.current) return;
 
-    const master = audioContext.createGain();
-    master.gain.value = 0.012;
-
-    const filter = audioContext.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.value = 760;
-    filter.Q.value = 0.5;
-
-    const noiseBuffer = audioContext.createBuffer(
-      1,
-      Math.max(1, Math.floor(audioContext.sampleRate * 1.6)),
-      audioContext.sampleRate,
-    );
-    const noise = noiseBuffer.getChannelData(0);
-    for (let index = 0; index < noise.length; index += 1) {
-      noise[index] = (Math.random() * 2 - 1) * 0.18;
-    }
-
-    const noiseSource = audioContext.createBufferSource();
-    noiseSource.buffer = noiseBuffer;
-    noiseSource.loop = true;
-
-    const oscillator = audioContext.createOscillator();
-    oscillator.type = "sine";
-    oscillator.frequency.value = 174;
-
-    const toneGain = audioContext.createGain();
-    toneGain.gain.value = 0.018;
-
-    const lfo = audioContext.createOscillator();
-    lfo.type = "sine";
-    lfo.frequency.value = 0.42;
-
-    const lfoGain = audioContext.createGain();
-    lfoGain.gain.value = 0.005;
-
-    noiseSource.connect(filter);
-    filter.connect(master);
-    oscillator.connect(toneGain);
-    toneGain.connect(master);
-    lfo.connect(lfoGain);
-    lfoGain.connect(master.gain);
-    master.connect(audioContext.destination);
-
-    noiseSource.start();
-    oscillator.start();
-    lfo.start();
-
-    thinkingSoundRef.current = {
-      gain: master,
-      lfo,
-      noise: noiseSource,
-      oscillator,
-    };
+    thinkingSoundRef.current = createThinkingSound(audioContext);
   }
 
   function stopThinkingSound() {
-    const nodes = thinkingSoundRef.current;
-    if (!nodes) return;
+    const sound = thinkingSoundRef.current;
+    if (!sound) return;
     thinkingSoundRef.current = null;
-
-    try {
-      nodes.gain.gain.setTargetAtTime(0, audioContextRef.current?.currentTime ?? 0, 0.03);
-    } catch {}
-
-    setTimeout(() => {
-      try {
-        nodes.noise.stop();
-      } catch {}
-      try {
-        nodes.oscillator.stop();
-      } catch {}
-      try {
-        nodes.lfo.stop();
-      } catch {}
-      try {
-        nodes.gain.disconnect();
-      } catch {}
-    }, 90);
+    sound.stop();
   }
 
   function playPcm16(base64: string, sampleRate: number) {
