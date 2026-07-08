@@ -8,6 +8,7 @@
     "start": "next start",
     "bench:stt": "node scripts/benchmark-together-stt.mts",
     "bench:tts": "node scripts/benchmark-together-tts.mts",
+    "bench:repair": "node scripts/benchmark-together-repair.mts",
     "test:voice": "node scripts/e2e-voice-latency.mjs"
   },
   "dependencies": {
