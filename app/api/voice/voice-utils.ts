@@ -36,6 +36,9 @@ export const TRANSCRIPT_MERGE_WINDOW_MS = 1500;
 // The client VAD already decided the user finished; this only coalesces
 // photo-finish arrivals. Anything longer re-litigates endpointing.
 export const REPLY_GRACE_MS = 300;
+// When the transcript reads as an unfinished thought ("so what about"),
+// wait longer before answering: the pause is probably the user thinking.
+export const REPLY_GRACE_INCOMPLETE_MS = 1200;
 // Repair is cosmetic-only; a result landing after the client's settle
 // window would rewrite text the user already trusts, so cap it hard.
 export const TRANSCRIPT_REPAIR_TIMEOUT_MS = 800;
@@ -178,6 +181,10 @@ export function isGhostTranscript(transcript: string) {
   if (!normalized) return true;
   if (!GHOST_TRANSCRIPTS.has(normalized)) return false;
   return normalized.split(" ").length <= 3;
+}
+
+export function transcriptLooksComplete(text: string) {
+  return /[.?!]["')\]]?$/u.test(text.trim());
 }
 
 export function wordChangeRatio(before: string, after: string) {

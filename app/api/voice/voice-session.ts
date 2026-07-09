@@ -7,8 +7,10 @@ import {
   mergeTranscriptText,
   normalizeTranscript,
   parseJson,
+  REPLY_GRACE_INCOMPLETE_MS,
   REPLY_GRACE_MS,
   resample,
+  transcriptLooksComplete,
   shouldFlushFirstTtsChunk,
   STT_MODELS,
   TRANSCRIPT_MERGE_WINDOW_MS,
@@ -55,6 +57,7 @@ export class VoiceSession {
   private awaitingCommittedTranscript = false;
   private deferredAnswer?: { rawTranscript: string; merged: boolean };
   private answerAudioStarted = false;
+  private continuationPending = false;
   private lastRawTranscript = "";
   private lastRepairedTranscript = "";
   private ttsDoneWatchdog?: NodeJS.Timeout;
@@ -178,6 +181,7 @@ export class VoiceSession {
       this.lastUserFinalAt = 0;
       this.userSpeechActive = false;
       this.awaitingCommittedTranscript = false;
+      this.continuationPending = false;
       this.deferredAnswer = undefined;
       clearTimeout(this.speechIdleTimer);
       this.lastRawTranscript = "";
@@ -200,6 +204,24 @@ export class VoiceSession {
     if (event.type === "speech.started") {
       this.userSpeechActive = true;
       this.pausePendingAnswer();
+      // The user resumed speaking shortly after their last turn, before
+      // hearing any reply: void the in-flight answer now and let the
+      // upcoming transcript merge into the previous turn. Measured from
+      // when speech resumed, not when its transcript arrives.
+      if (
+        !this.answerAudioStarted &&
+        this.lastUserTranscript.length > 0 &&
+        Date.now() - this.lastUserFinalAt < TRANSCRIPT_MERGE_WINDOW_MS &&
+        !this.continuationPending
+      ) {
+        this.continuationPending = true;
+        this.cancelAssistantOutput();
+        this.retractLastTurnForMerge();
+        // If the resumed speech turns out to be a ghost/noise, this
+        // re-answers the original turn; merged:true makes the client
+        // replace (not duplicate) the existing bubble.
+        this.deferredAnswer = { rawTranscript: this.lastUserTranscript, merged: true };
+      }
       this.refreshSpeechIdleTimer();
       return;
     }
@@ -236,6 +258,7 @@ export class VoiceSession {
       const transcript = cleanTranscript(String(message.transcript ?? ""));
       if (transcript.length === 0 || isGhostTranscript(transcript)) {
         this.awaitingCommittedTranscript = false;
+        this.continuationPending = false;
         this.send("transcript.ignored", { text: transcript });
         this.scheduleDeferredAnswerIfIdle();
         return;
@@ -243,22 +266,26 @@ export class VoiceSession {
 
       this.awaitingCommittedTranscript = false;
       if (this.isDuplicateTranscript(transcript)) {
+        this.continuationPending = false;
         this.scheduleDeferredAnswerIfIdle();
         return;
       }
 
       const now = Date.now();
       // Merging retracts the previous turn, so it is only safe while the
-      // user hasn't heard any of the reply yet.
+      // user hasn't heard any of the reply yet. continuationPending means
+      // speech resumed inside the window (history already retracted then).
       const shouldMerge =
         this.lastUserTranscript.length > 0 &&
-        !this.answerAudioStarted &&
-        now - this.lastUserFinalAt < TRANSCRIPT_MERGE_WINDOW_MS;
+        (this.continuationPending ||
+          (!this.answerAudioStarted &&
+            now - this.lastUserFinalAt < TRANSCRIPT_MERGE_WINDOW_MS));
       const finalTranscript = shouldMerge
         ? mergeTranscriptText(this.lastUserTranscript, transcript)
         : transcript;
 
-      if (shouldMerge) this.retractLastTurnForMerge();
+      if (shouldMerge && !this.continuationPending) this.retractLastTurnForMerge();
+      this.continuationPending = false;
 
       this.lastUserTranscript = finalTranscript;
       this.lastUserFinalAt = now;
@@ -463,13 +490,20 @@ export class VoiceSession {
     this.repairAbort = undefined;
     const transcriptId = ++this.pendingTranscriptId;
 
+    // A transcript that reads as an unfinished thought usually means the
+    // user paused to think; give them room before answering. speech.started
+    // cancels this timer either way.
+    const grace = transcriptLooksComplete(rawTranscript)
+      ? REPLY_GRACE_MS
+      : REPLY_GRACE_INCOMPLETE_MS;
+
     this.answerTimer = setTimeout(() => {
       this.answerTimer = undefined;
       this.deferredAnswer = undefined;
       if (!this.stopped) {
         this.startTurn(rawTranscript, merged, transcriptId);
       }
-    }, REPLY_GRACE_MS);
+    }, grace);
   }
 
   private startTurn(rawTranscript: string, merged: boolean, transcriptId: number) {
@@ -539,6 +573,7 @@ export class VoiceSession {
 
   private getPendingMergeBase() {
     if (!this.lastUserTranscript) return "";
+    if (this.continuationPending) return this.lastUserTranscript;
     if (this.answerAudioStarted) return "";
     if (Date.now() - this.lastUserFinalAt >= TRANSCRIPT_MERGE_WINDOW_MS) return "";
     return this.lastUserTranscript;
