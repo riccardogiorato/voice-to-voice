@@ -1,6 +1,9 @@
+// Parakeet is multilingual (25 languages) with punctuated output;
+// nemotron-3-asr is English-only (Italian "ciao come stai" came back as
+// "Shao comes") and only ~37ms faster. Benchmarked 2026-07-09.
 const STT_MODEL = envOrDefault(
   "TOGETHER_STT_MODEL",
-  "nvidia/nemotron-3-asr-streaming-0.6b",
+  "nvidia/parakeet-tdt-0.6b-v3",
 );
 const STT_FALLBACK_MODEL = envOrDefault(
   "TOGETHER_STT_FALLBACK_MODEL",
@@ -69,7 +72,7 @@ export const systemPrompt =
   "You are Together Voice, a warm, concise voice assistant demo built by Together AI. " +
   "Together AI is an AI acceleration cloud: it serves 200+ open-source models with fast inference APIs, " +
   "plus fine-tuning and GPU clusters. This demo runs entirely on Together AI models: " +
-  "NVIDIA Nemotron transcribes the user's speech, an open chat model writes your replies, and Cartesia Sonic speaks them. " +
+  "NVIDIA Parakeet transcribes the user's speech, an open chat model writes your replies, and Cartesia Sonic speaks them. " +
   "Whisper and Kokoro are configured as fallbacks. " +
   "If asked about Together AI, Together Voice, or this app, answer from those facts only. " +
   "You can use a fast web_search tool for current, recent, factual, or source-backed questions. " +
