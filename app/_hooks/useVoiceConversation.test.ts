@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   appendSpokenWordText,
+  buildConversationItems,
   buildSocketCloseMessage,
   buildReceivedWordText,
   applyToolActivity,
@@ -58,6 +59,63 @@ test("updates tool activity rows by id", () => {
       status: "completed",
       input: "weather in Venice",
       summary: "1 result: Venice weather",
+    },
+  ]);
+});
+
+test("keeps tool activity anchored in the conversation timeline", () => {
+  const running = applyToolActivity(
+    [],
+    {
+      id: "call_search",
+      name: "web_search",
+      status: "running",
+      input: "weather in Venice",
+    },
+    1,
+  );
+
+  const completed = applyToolActivity(
+    running,
+    {
+      id: "call_search",
+      name: "web_search",
+      status: "completed",
+      input: "weather in Venice",
+      summary: "1 result: Venice weather",
+    },
+    2,
+  );
+
+  expect(
+    buildConversationItems({
+      turns: [
+        { role: "user", text: "What's the weather in Venice?" },
+        { role: "assistant", text: "It looks mild and cloudy." },
+      ],
+      partial: null,
+      assistantDraft: "",
+      toolActivities: completed,
+    }),
+  ).toEqual([
+    {
+      type: "turn",
+      role: "user",
+      text: "What's the weather in Venice?",
+    },
+    {
+      type: "tool",
+      id: "call_search",
+      name: "web_search",
+      status: "completed",
+      input: "weather in Venice",
+      summary: "1 result: Venice weather",
+      anchorTurnCount: 1,
+    },
+    {
+      type: "turn",
+      role: "assistant",
+      text: "It looks mild and cloudy.",
     },
   ]);
 });

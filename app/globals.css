@@ -146,7 +146,40 @@ button {
 
 .voice-orb-idle {
   transform: scale(0.94);
-  opacity: 0.94;
+  opacity: 0.78;
+  filter:
+    grayscale(0.86)
+    saturate(0.24)
+    drop-shadow(0 14px 24px rgba(70, 64, 76, 0.1))
+    drop-shadow(0 24px 42px rgba(70, 64, 76, 0.08));
+}
+
+.voice-orb-idle::before,
+.voice-orb-idle::after {
+  animation: none;
+  background:
+    conic-gradient(
+      from 120deg,
+      rgba(255, 255, 255, 0.8),
+      rgba(198, 193, 203, 0.48),
+      rgba(139, 132, 146, 0.28),
+      rgba(214, 209, 218, 0.48),
+      rgba(255, 255, 255, 0.8)
+    );
+  opacity: 0.36;
+}
+
+.voice-orb-idle .voice-orb-core {
+  background:
+    radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.74), transparent 24%),
+    radial-gradient(circle at 52% 48%, rgba(170, 164, 176, 0.5), transparent 42%),
+    radial-gradient(circle at 70% 76%, rgba(120, 114, 128, 0.32), transparent 36%),
+    linear-gradient(145deg, rgba(218, 214, 222, 0.82), rgba(164, 157, 171, 0.64));
+  box-shadow:
+    inset 0 0 24px rgba(255, 255, 255, 0.34),
+    inset 0 -22px 34px rgba(46, 42, 52, 0.12),
+    0 0 0 1px rgba(255, 255, 255, 0.26),
+    0 0 12px rgba(80, 74, 88, 0.08);
 }
 
 .voice-orb-connecting::before,

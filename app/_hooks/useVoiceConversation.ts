@@ -36,7 +36,12 @@ export type ToolActivityItem = {
   status: "running" | "completed" | "failed";
   input?: string;
   summary?: string;
+  anchorTurnCount?: number;
 };
+
+export type ConversationTimelineItem =
+  | (TranscriptItem & { type: "turn" })
+  | (ToolActivityItem & { type: "tool" });
 
 type DebugEntry = {
   at: string;
@@ -119,6 +124,7 @@ const PRE_ROLL_MS = 320;
 const TRANSCRIPT_SETTLE_MS = 1000;
 const MAX_COMMITTED_TURNS = 24;
 const MAX_VISIBLE_TRANSCRIPT_ITEMS = 8;
+const MAX_VISIBLE_CONVERSATION_ITEMS = 10;
 
 export function useVoiceConversation() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -135,6 +141,8 @@ export function useVoiceConversation() {
   const [debugVersion, setDebugVersion] = useState(0);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const turnsRef = useRef<Turn[]>([]);
+  const partialRef = useRef<PartialTranscript | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -187,8 +195,8 @@ export function useVoiceConversation() {
     clearPlayback();
     resetAssistantSpeechTracking();
     resetMicGate();
-    setTurns([]);
-    setPartial(null);
+    updateTurns([]);
+    updatePartial(null);
     setAssistantDraft("");
     setToolActivities([]);
     setError("");
@@ -252,13 +260,36 @@ export function useVoiceConversation() {
     phaseRef.current = phase;
   }, [phase]);
 
+  function updateTurns(next: Turn[] | ((current: Turn[]) => Turn[])) {
+    if (typeof next === "function") {
+      setTurns((current) => {
+        const updated = next(current);
+        turnsRef.current = updated;
+        return updated;
+      });
+      return;
+    }
+
+    turnsRef.current = next;
+    setTurns(next);
+  }
+
+  function updatePartial(next: PartialTranscript | null) {
+    partialRef.current = next;
+    setPartial(next);
+  }
+
+  function getToolActivityAnchorTurnCount() {
+    return turnsRef.current.length + (partialRef.current ? 1 : 0);
+  }
+
 
   async function startConversation() {
     if (isActive) return;
 
     clearDebugLog();
     setError("");
-    setPartial(null);
+    updatePartial(null);
     setAssistantDraft("");
     mutedRef.current = false;
     setMuted(false);
@@ -337,17 +368,17 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "transcript.delta") {
-      setPartial(getTranscriptPartialFromDelta(event));
+      updatePartial(getTranscriptPartialFromDelta(event));
       return;
     }
 
     if (event.type === "transcript.final") {
-      setPartial(null);
-      setTurns((current) => applyTranscriptFinalToTurns(current, event));
+      updatePartial(null);
+      updateTurns((current) => applyTranscriptFinalToTurns(current, event));
       if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
       settleTimerRef.current = setTimeout(() => {
         settleTimerRef.current = null;
-        setTurns((current) => settleLastUserTurn(current));
+        updateTurns((current) => settleLastUserTurn(current));
       }, TRANSCRIPT_SETTLE_MS);
       return;
     }
@@ -357,12 +388,12 @@ export function useVoiceConversation() {
         clearTimeout(settleTimerRef.current);
         settleTimerRef.current = null;
       }
-      setTurns((current) => applyTranscriptUpdateToTurns(current, event.text));
+      updateTurns((current) => applyTranscriptUpdateToTurns(current, event.text));
       return;
     }
 
     if (event.type === "transcript.ignored") {
-      setPartial(null);
+      updatePartial(null);
       return;
     }
 
@@ -396,7 +427,8 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "tool.activity") {
-      setToolActivities((current) => applyToolActivity(current, event));
+      const anchorTurnCount = getToolActivityAnchorTurnCount();
+      setToolActivities((current) => applyToolActivity(current, event, anchorTurnCount));
       return;
     }
 
@@ -457,7 +489,7 @@ export function useVoiceConversation() {
     socketRef.current = null;
     tearDownAudio();
     updatePhase("idle");
-    setPartial(null);
+    updatePartial(null);
     resetAssistantSpeechTracking();
     setMicActivity(0);
     setMicLevel(0);
@@ -721,6 +753,8 @@ export function useVoiceConversation() {
     micBufferRef.current = [];
     micBufferSamplesRef.current = 0;
 
+    // Current wire format: PCM16 JSON. TODO: switch audio.input to binary
+    // PCM16 WebSocket frames to remove base64/JSON overhead.
     sendClientEvent(
       {
         type: "audio.input",
@@ -975,7 +1009,7 @@ export function useVoiceConversation() {
   function commitAssistantText(text: string) {
     const trimmed = text.trim();
     if (!trimmed) return;
-    setTurns((current) => appendAssistantTurn(current, trimmed));
+    updateTurns((current) => appendAssistantTurn(current, trimmed));
   }
 
   function resetAssistantSpeechTracking() {
@@ -1159,12 +1193,25 @@ export function useVoiceConversation() {
     return buildTranscriptItems({ turns, partial, assistantDraft });
   }, [assistantDraft, partial, turns]);
 
+  const conversationItems = useMemo<ConversationTimelineItem[]>(() => {
+    return buildConversationItems({ turns, partial, assistantDraft, toolActivities });
+  }, [assistantDraft, partial, toolActivities, turns]);
+
   useEffect(() => {
     const el = conversationScrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [toolActivities, transcriptItems]);
+  }, [conversationItems]);
+
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
+
+  useEffect(() => {
+    partialRef.current = partial;
+  }, [partial]);
 
   return {
+    conversationItems,
     conversationScrollRef,
     error,
     isActive,
@@ -1430,16 +1477,127 @@ export function buildTranscriptItems({
   return items.slice(-MAX_VISIBLE_TRANSCRIPT_ITEMS);
 }
 
+export function buildConversationItems({
+  turns,
+  partial,
+  assistantDraft,
+  toolActivities,
+}: {
+  turns: Turn[];
+  partial: PartialTranscript | null;
+  assistantDraft: string;
+  toolActivities: ToolActivityItem[];
+}): ConversationTimelineItem[] {
+  const timelineTurns = buildIndexedTranscriptItems({ turns, partial, assistantDraft });
+  const toolsByAnchor = new Map<number, ToolActivityItem[]>();
+
+  for (const activity of toolActivities) {
+    const anchorTurnCount = activity.anchorTurnCount ?? turns.length;
+    const existing = toolsByAnchor.get(anchorTurnCount) ?? [];
+    existing.push(activity);
+    toolsByAnchor.set(anchorTurnCount, existing);
+  }
+
+  const items: ConversationTimelineItem[] = [];
+  const renderedToolIds = new Set<string>();
+
+  function pushTools(anchorTurnCount: number) {
+    const tools = toolsByAnchor.get(anchorTurnCount) ?? [];
+    for (const activity of tools) {
+      items.push({ ...activity, type: "tool" });
+      renderedToolIds.add(activity.id);
+    }
+  }
+
+  pushTools(0);
+  for (const item of timelineTurns) {
+    const { anchorTurnCount, ...turn } = item;
+    items.push(turn);
+    pushTools(anchorTurnCount);
+  }
+
+  for (const activity of toolActivities) {
+    if (!renderedToolIds.has(activity.id)) {
+      items.push({ ...activity, type: "tool" });
+    }
+  }
+
+  return items.slice(-MAX_VISIBLE_CONVERSATION_ITEMS);
+}
+
+function buildIndexedTranscriptItems({
+  turns,
+  partial,
+  assistantDraft,
+}: {
+  turns: Turn[];
+  partial: PartialTranscript | null;
+  assistantDraft: string;
+}) {
+  const items: Array<TranscriptItem & { type: "turn"; anchorTurnCount: number }> =
+    turns.map((turn, index) => ({
+      ...turn,
+      type: "turn",
+      anchorTurnCount: index + 1,
+    }));
+
+  if (partial) {
+    const liveUserText = mergeLiveTranscript(partial.baseText, partial.text);
+    const lastIndex = items.length - 1;
+    const shouldUpdateCurrentUser =
+      lastIndex >= 0 &&
+      items[lastIndex].role === "user" &&
+      partial.baseText !== undefined &&
+      normalizeTranscriptText(items[lastIndex].text) ===
+        normalizeTranscriptText(partial.baseText);
+
+    if (shouldUpdateCurrentUser) {
+      items[lastIndex] = {
+        role: "user",
+        text: liveUserText,
+        live: true,
+        type: "turn",
+        anchorTurnCount: lastIndex + 1,
+      };
+    } else {
+      items.push({
+        role: "user",
+        text: liveUserText,
+        live: true,
+        type: "turn",
+        anchorTurnCount: turns.length + 1,
+      });
+    }
+  }
+
+  if (assistantDraft.trim()) {
+    items.push({
+      role: "assistant",
+      text: assistantDraft,
+      live: true,
+      type: "turn",
+      anchorTurnCount: turns.length + 1,
+    });
+  }
+
+  return items;
+}
+
 export function applyToolActivity(
   current: ToolActivityItem[],
   event: ToolActivityItem,
+  anchorTurnCount?: number,
 ) {
   const next = current.slice();
   const index = next.findIndex((item) => item.id === event.id);
   if (index >= 0) {
     next[index] = { ...next[index], ...event };
   } else {
-    next.push(event);
+    next.push(
+      anchorTurnCount === undefined
+        ? event
+        : { ...event, anchorTurnCount },
+    );
   }
   return next.slice(-3);
 }
