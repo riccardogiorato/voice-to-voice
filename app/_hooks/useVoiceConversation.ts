@@ -82,7 +82,8 @@ type ClientEvent =
   | { type: "audio.input"; audio: string; sampleRate: number };
 
 const BARGE_IN_VAD_THRESHOLD = 0.72;
-const BARGE_IN_HOLD_MS = 90;
+const BARGE_IN_LEVEL_THRESHOLD = 0.035;
+const BARGE_IN_SUSTAIN_MS = 1_000;
 const BARGE_IN_CAPTURE_HOLD_MS = 1_500;
 const ASSISTANT_AUDIO_TAIL_MS = 850;
 const SPEAKING_WATCHDOG_MS = 20_000;
@@ -130,7 +131,6 @@ export function useVoiceConversation() {
   const micBufferSamplesRef = useRef(0);
   const lastSpeechAtRef = useRef(Number.NEGATIVE_INFINITY);
   const speechOpenRef = useRef(false);
-  const bargeInSentRef = useRef(false);
   const bargeInStartedAtRef = useRef(Number.NEGATIVE_INFINITY);
   const bargeInCaptureUntilRef = useRef(Number.NEGATIVE_INFINITY);
   const assistantAudioBlockUntilRef = useRef(Number.NEGATIVE_INFINITY);
@@ -201,7 +201,6 @@ export function useVoiceConversation() {
   function updatePhase(nextPhase: Phase) {
     phaseRef.current = nextPhase;
     if (nextPhase === "idle" || nextPhase === "listening") {
-      bargeInSentRef.current = false;
       bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
     }
     if (nextPhase === "thinking") {
@@ -508,8 +507,14 @@ export function useVoiceConversation() {
       vadSpeech,
     });
     const hasBargeInSpeech = detectBargeInSpeech({
-      vadSpeech,
+      level,
       vadProbability: vadDecision?.probability ?? null,
+    });
+    const assistantBlocking = isAssistantAudioBlockingMic(now) || phaseRef.current === "speaking";
+    const bargeInReady = detectSustainedBargeIn({
+      hasBargeInSpeech,
+      startedAt: bargeInStartedAtRef.current,
+      now,
     });
     let bufferedSpeech = detectBufferedSpeech({
       hasSpeech,
@@ -524,16 +529,16 @@ export function useVoiceConversation() {
       vadSpeech,
       hasSpeech,
       hasBargeInSpeech,
+      bargeInReady,
       bufferedSpeech,
       speechOpen: speechOpenRef.current,
       sampleRate,
     });
 
-    if (isAssistantAudioBlockingMic(now) || phaseRef.current === "speaking") {
+    if (assistantBlocking) {
       if (!hasBargeInSpeech) {
         resetMicGate();
         bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
-        // Speaker leakage must not reach the server while the assistant talks.
         return;
       }
 
@@ -543,20 +548,17 @@ export function useVoiceConversation() {
         return;
       }
 
-      if (now - bargeInStartedAtRef.current < BARGE_IN_HOLD_MS) {
+      if (!bargeInReady) {
         resetMicGate();
         return;
       }
 
-      if (!bargeInSentRef.current) {
-        sendClientEvent({ type: "response.cancel" }, socket);
-        commitInterruptedAssistantDraft();
-        clearPlayback();
-        updatePhase("listening");
-        bargeInSentRef.current = true;
-        bargeInCaptureUntilRef.current = now + BARGE_IN_CAPTURE_HOLD_MS;
-        bufferedSpeech = true;
-      }
+      sendClientEvent({ type: "response.cancel" }, socket);
+      commitInterruptedAssistantDraft();
+      clearPlayback();
+      updatePhase("listening");
+      bargeInCaptureUntilRef.current = now + BARGE_IN_CAPTURE_HOLD_MS;
+      bufferedSpeech = true;
     }
 
     updateMicActivity(
@@ -679,6 +681,7 @@ export function useVoiceConversation() {
     vadSpeech,
     hasSpeech,
     hasBargeInSpeech,
+    bargeInReady,
     bufferedSpeech,
     speechOpen,
     sampleRate,
@@ -689,6 +692,7 @@ export function useVoiceConversation() {
     vadSpeech: boolean | null;
     hasSpeech: boolean;
     hasBargeInSpeech: boolean;
+    bargeInReady: boolean;
     bufferedSpeech: boolean;
     speechOpen: boolean;
     sampleRate: number;
@@ -703,6 +707,7 @@ export function useVoiceConversation() {
       isSpeech: vadSpeech,
       hasSpeech,
       hasBargeInSpeech,
+      bargeInReady,
       bufferedSpeech,
       speechOpen,
       speechDurationMs,
@@ -1149,14 +1154,16 @@ export function getPhaseAfterLocalSpeechStart(phase: Phase): Phase {
 }
 
 export function detectBargeInSpeech({
-  vadSpeech,
+  level,
   vadProbability,
 }: {
-  vadSpeech: boolean | null;
+  level: number;
   vadProbability: number | null;
 }) {
-  void vadSpeech;
-  return vadProbability !== null && vadProbability >= BARGE_IN_VAD_THRESHOLD;
+  return (
+    (vadProbability !== null && vadProbability >= BARGE_IN_VAD_THRESHOLD) ||
+    level >= BARGE_IN_LEVEL_THRESHOLD
+  );
 }
 
 export function detectOpenSpeech({
@@ -1177,6 +1184,22 @@ export function detectBufferedSpeech({
   bargeInCaptureActive: boolean;
 }) {
   return hasSpeech || (bargeInCaptureActive && hasBargeInSpeech);
+}
+
+export function detectSustainedBargeIn({
+  hasBargeInSpeech,
+  startedAt,
+  now,
+}: {
+  hasBargeInSpeech: boolean;
+  startedAt: number;
+  now: number;
+}) {
+  return (
+    hasBargeInSpeech &&
+    startedAt !== Number.NEGATIVE_INFINITY &&
+    now - startedAt >= BARGE_IN_SUSTAIN_MS
+  );
 }
 
 export function shouldKeepSpeechOpen({

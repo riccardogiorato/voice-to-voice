@@ -8,6 +8,7 @@ import {
   detectBargeInSpeech,
   detectBufferedSpeech,
   detectOpenSpeech,
+  detectSustainedBargeIn,
   getPhaseAfterLocalSpeechStart,
   getTranscriptPartialFromDelta,
   mergeAssistantWordTimings,
@@ -98,19 +99,37 @@ test("local speech start exits thinking so the thinking sound stops immediately"
   expect(getPhaseAfterLocalSpeechStart("speaking")).toBe("speaking");
 });
 
-test("detects barge-in using TEN VAD only", () => {
+test("detects barge-in evidence from VAD confidence or loud mic energy", () => {
   expect(
-    detectBargeInSpeech({ vadSpeech: true, vadProbability: 0.76 }),
+    detectBargeInSpeech({ level: 0.001, vadProbability: 0.76 }),
   ).toBe(true);
   expect(
-    detectBargeInSpeech({ vadSpeech: false, vadProbability: 0.76 }),
+    detectBargeInSpeech({ level: 0.04, vadProbability: null }),
   ).toBe(true);
   expect(
-    detectBargeInSpeech({ vadSpeech: null, vadProbability: null }),
+    detectBargeInSpeech({ level: 0.001, vadProbability: null }),
   ).toBe(false);
   expect(
-    detectBargeInSpeech({ vadSpeech: true, vadProbability: 0.7 }),
+    detectBargeInSpeech({ level: 0.001, vadProbability: 0.7 }),
   ).toBe(false);
+});
+
+test("confirms barge-in only after sustained evidence", () => {
+  expect(
+    detectSustainedBargeIn({
+      hasBargeInSpeech: true,
+      startedAt: 1_000,
+      now: 1_900,
+    }),
+  ).toBe(false);
+
+  expect(
+    detectSustainedBargeIn({
+      hasBargeInSpeech: true,
+      startedAt: 1_000,
+      now: 2_050,
+    }),
+  ).toBe(true);
 });
 
 test("keeps capturing a barge-in utterance after playback is cancelled", () => {
