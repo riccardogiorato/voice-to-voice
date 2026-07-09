@@ -8,7 +8,7 @@ import {
   detectBargeInSpeech,
   detectBufferedSpeech,
   detectOpenSpeech,
-  detectSustainedBargeIn,
+  trackBargeInAttempt,
   getPhaseAfterLocalSpeechStart,
   getTranscriptPartialFromDelta,
   mergeAssistantWordTimings,
@@ -116,20 +116,69 @@ test("detects barge-in evidence from VAD confidence or loud mic energy", () => {
 
 test("confirms barge-in only after sustained evidence", () => {
   expect(
-    detectSustainedBargeIn({
+    trackBargeInAttempt({
       hasBargeInSpeech: true,
       startedAt: 1_000,
-      now: 1_900,
-    }),
+      lastEvidenceAt: 1_400,
+      now: 1_450,
+    }).ready,
   ).toBe(false);
 
   expect(
-    detectSustainedBargeIn({
+    trackBargeInAttempt({
       hasBargeInSpeech: true,
       startedAt: 1_000,
-      now: 2_050,
-    }),
+      lastEvidenceAt: 1_500,
+      now: 1_650,
+    }).ready,
   ).toBe(true);
+});
+
+test("starts a barge-in attempt on first evidence", () => {
+  const attempt = trackBargeInAttempt({
+    hasBargeInSpeech: true,
+    startedAt: Number.NEGATIVE_INFINITY,
+    lastEvidenceAt: Number.NEGATIVE_INFINITY,
+    now: 5,
+  });
+
+  expect(attempt.startedAt).toBe(5);
+  expect(attempt.lastEvidenceAt).toBe(5);
+  expect(attempt.ready).toBe(false);
+});
+
+test("keeps a barge-in attempt alive through natural speech gaps", () => {
+  const heldOpen = trackBargeInAttempt({
+    hasBargeInSpeech: false,
+    startedAt: 1_000,
+    lastEvidenceAt: 1_200,
+    now: 1_450,
+  });
+
+  expect(heldOpen.startedAt).toBe(1_000);
+  expect(heldOpen.ready).toBe(false);
+
+  const reset = trackBargeInAttempt({
+    hasBargeInSpeech: false,
+    startedAt: 1_000,
+    lastEvidenceAt: 1_200,
+    now: 1_600,
+  });
+
+  expect(reset.startedAt).toBe(Number.NEGATIVE_INFINITY);
+  expect(reset.lastEvidenceAt).toBe(Number.NEGATIVE_INFINITY);
+  expect(reset.ready).toBe(false);
+});
+
+test("never fires while evidence is absent, even inside the grace window", () => {
+  expect(
+    trackBargeInAttempt({
+      hasBargeInSpeech: false,
+      startedAt: 1_000,
+      lastEvidenceAt: 1_700,
+      now: 1_800,
+    }).ready,
+  ).toBe(false);
 });
 
 test("keeps capturing a barge-in utterance after playback is cancelled", () => {

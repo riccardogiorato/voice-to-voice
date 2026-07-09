@@ -83,7 +83,13 @@ type ClientEvent =
 
 const BARGE_IN_VAD_THRESHOLD = 0.72;
 const BARGE_IN_LEVEL_THRESHOLD = 0.035;
-const BARGE_IN_SUSTAIN_MS = 1_000;
+const BARGE_IN_SUSTAIN_MS = 600;
+// Natural speech dips below both thresholds for tens of ms between phonemes;
+// evidence gaps shorter than this must not reset the barge-in attempt.
+const BARGE_IN_EVIDENCE_GRACE_MS = 350;
+// Must cover sustain + grace + normal pre-roll so the whole interrupting
+// utterance survives until barge-in fires.
+const BARGE_IN_PRE_ROLL_MS = 1_600;
 const BARGE_IN_CAPTURE_HOLD_MS = 1_500;
 const ASSISTANT_AUDIO_TAIL_MS = 850;
 const SPEAKING_WATCHDOG_MS = 20_000;
@@ -134,6 +140,7 @@ export function useVoiceConversation() {
   const lastSpeechAtRef = useRef(Number.NEGATIVE_INFINITY);
   const speechOpenRef = useRef(false);
   const bargeInStartedAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const bargeInLastEvidenceAtRef = useRef(Number.NEGATIVE_INFINITY);
   const bargeInCaptureUntilRef = useRef(Number.NEGATIVE_INFINITY);
   const assistantAudioBlockUntilRef = useRef(Number.NEGATIVE_INFINITY);
   const pcmLeftoverRef = useRef<Uint8Array | null>(null);
@@ -209,6 +216,7 @@ export function useVoiceConversation() {
     phaseRef.current = nextPhase;
     if (nextPhase === "idle" || nextPhase === "listening") {
       bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
+      bargeInLastEvidenceAtRef.current = Number.NEGATIVE_INFINITY;
     }
     if (nextPhase === "thinking") {
       startThinkingSound();
@@ -471,6 +479,7 @@ export function useVoiceConversation() {
     lastSpeechAtRef.current = Number.NEGATIVE_INFINITY;
     speechOpenRef.current = false;
     bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
+    bargeInLastEvidenceAtRef.current = Number.NEGATIVE_INFINITY;
     assistantAudioBlockUntilRef.current = Number.NEGATIVE_INFINITY;
     pcmLeftoverRef.current = null;
     preRollRef.current = [];
@@ -526,11 +535,18 @@ export function useVoiceConversation() {
       vadProbability: vadDecision?.probability ?? null,
     });
     const assistantBlocking = isAssistantAudioBlockingMic(now) || phaseRef.current === "speaking";
-    const bargeInReady = detectSustainedBargeIn({
-      hasBargeInSpeech,
-      startedAt: bargeInStartedAtRef.current,
-      now,
-    });
+    let bargeInReady = false;
+    if (assistantBlocking) {
+      const attempt = trackBargeInAttempt({
+        hasBargeInSpeech,
+        startedAt: bargeInStartedAtRef.current,
+        lastEvidenceAt: bargeInLastEvidenceAtRef.current,
+        now,
+      });
+      bargeInStartedAtRef.current = attempt.startedAt;
+      bargeInLastEvidenceAtRef.current = attempt.lastEvidenceAt;
+      bargeInReady = attempt.ready;
+    }
     let bufferedSpeech = detectBufferedSpeech({
       hasSpeech,
       hasBargeInSpeech,
@@ -551,20 +567,17 @@ export function useVoiceConversation() {
     });
 
     if (assistantBlocking) {
-      if (!hasBargeInSpeech) {
-        resetMicGate({ resetMicLevel: false });
-        bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
-        return;
-      }
-
-      if (bargeInStartedAtRef.current === Number.NEGATIVE_INFINITY) {
-        bargeInStartedAtRef.current = now;
-        resetMicGate({ resetMicLevel: false });
-        return;
-      }
-
       if (!bargeInReady) {
-        resetMicGate({ resetMicLevel: false });
+        resetMicGate({ resetMicLevel: false, keepPreRoll: true });
+        // Buffer the interrupting utterance so its start is not lost while
+        // the sustain window runs; it flushes as pre-roll once barge-in fires.
+        pushPreRoll(
+          input,
+          sampleRate,
+          bargeInStartedAtRef.current === Number.NEGATIVE_INFINITY
+            ? PRE_ROLL_MS
+            : BARGE_IN_PRE_ROLL_MS,
+        );
         return;
       }
 
@@ -605,14 +618,7 @@ export function useVoiceConversation() {
       lastSpeechAtRef.current = now;
       speechOpenRef.current = true;
     } else if (!speechOpenRef.current) {
-      preRollRef.current.push(new Float32Array(input));
-      preRollSamplesRef.current += input.length;
-      const maxPreRollSamples = Math.round(sampleRate * (PRE_ROLL_MS / 1000));
-      while (preRollSamplesRef.current > maxPreRollSamples) {
-        const oldest = preRollRef.current.shift();
-        if (!oldest) break;
-        preRollSamplesRef.current -= oldest.length;
-      }
+      pushPreRoll(input, sampleRate, PRE_ROLL_MS);
       noiseFloorRef.current = Math.min(
         0.02,
         Math.max(0.004, noiseFloorRef.current * 0.95 + level * 0.05),
@@ -655,16 +661,29 @@ export function useVoiceConversation() {
     flushSpeechAudio(socket, sampleRate);
   }
 
-  function resetMicGate(options: { resetMicLevel?: boolean } = {}) {
-    const { resetMicLevel = true } = options;
+  function pushPreRoll(input: Float32Array, sampleRate: number, maxMs: number) {
+    preRollRef.current.push(new Float32Array(input));
+    preRollSamplesRef.current += input.length;
+    const maxPreRollSamples = Math.round(sampleRate * (maxMs / 1000));
+    while (preRollSamplesRef.current > maxPreRollSamples) {
+      const oldest = preRollRef.current.shift();
+      if (!oldest) break;
+      preRollSamplesRef.current -= oldest.length;
+    }
+  }
+
+  function resetMicGate(options: { resetMicLevel?: boolean; keepPreRoll?: boolean } = {}) {
+    const { resetMicLevel = true, keepPreRoll = false } = options;
     micBufferRef.current = [];
     micBufferSamplesRef.current = 0;
     lastSpeechAtRef.current = Number.NEGATIVE_INFINITY;
     speechOpenRef.current = false;
     setUserSpeaking(false);
     bargeInCaptureUntilRef.current = Number.NEGATIVE_INFINITY;
-    preRollRef.current = [];
-    preRollSamplesRef.current = 0;
+    if (!keepPreRoll) {
+      preRollRef.current = [];
+      preRollSamplesRef.current = 0;
+    }
     speechOpenedAtRef.current = Number.NEGATIVE_INFINITY;
     updateMicActivity(0, true);
     if (resetMicLevel) {
@@ -797,6 +816,7 @@ export function useVoiceConversation() {
     nextPlayTimeRef.current = audioContextRef.current?.currentTime ?? 0;
     assistantAudioBlockUntilRef.current = Number.NEGATIVE_INFINITY;
     bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
+    bargeInLastEvidenceAtRef.current = Number.NEGATIVE_INFINITY;
     bargeInCaptureUntilRef.current = Number.NEGATIVE_INFINITY;
     pcmLeftoverRef.current = null;
     if (pendingPhaseRef.current) {
@@ -1223,20 +1243,44 @@ export function detectBufferedSpeech({
   return hasSpeech || (bargeInCaptureActive && hasBargeInSpeech);
 }
 
-export function detectSustainedBargeIn({
+export type BargeInAttempt = {
+  startedAt: number;
+  lastEvidenceAt: number;
+  ready: boolean;
+};
+
+// Natural speech dips below the barge-in thresholds between phonemes, so an
+// attempt survives evidence gaps up to the grace window instead of resetting.
+// It only fires (`ready`) while evidence is present, so an isolated cough can
+// never outlast the sustain window on grace alone.
+export function trackBargeInAttempt({
   hasBargeInSpeech,
   startedAt,
+  lastEvidenceAt,
   now,
 }: {
   hasBargeInSpeech: boolean;
   startedAt: number;
+  lastEvidenceAt: number;
   now: number;
-}) {
-  return (
-    hasBargeInSpeech &&
-    startedAt !== Number.NEGATIVE_INFINITY &&
-    now - startedAt >= BARGE_IN_SUSTAIN_MS
-  );
+}): BargeInAttempt {
+  if (!hasBargeInSpeech) {
+    if (now - lastEvidenceAt > BARGE_IN_EVIDENCE_GRACE_MS) {
+      return {
+        startedAt: Number.NEGATIVE_INFINITY,
+        lastEvidenceAt: Number.NEGATIVE_INFINITY,
+        ready: false,
+      };
+    }
+    return { startedAt, lastEvidenceAt, ready: false };
+  }
+
+  const nextStartedAt = startedAt === Number.NEGATIVE_INFINITY ? now : startedAt;
+  return {
+    startedAt: nextStartedAt,
+    lastEvidenceAt: now,
+    ready: now - nextStartedAt >= BARGE_IN_SUSTAIN_MS,
+  };
 }
 
 export function shouldKeepSpeechOpen({
