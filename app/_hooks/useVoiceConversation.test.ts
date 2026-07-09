@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   appendSpokenWordText,
+  buildReceivedWordText,
   applyTranscriptFinalToTurns,
   buildSpokenTextAtTime,
   buildTranscriptItems,
@@ -9,6 +10,8 @@ import {
   getPhaseAfterLocalSpeechStart,
   getTranscriptPartialFromDelta,
   mergeAssistantWordTimings,
+  selectAssistantDraftText,
+  selectCompletedAssistantText,
   shouldKeepSpeechOpen,
 } from "./useVoiceConversation";
 
@@ -154,6 +157,27 @@ test("builds spoken text from the live playback clock", () => {
   ).toBe("Once upon");
 });
 
+test("builds text from received TTS words in arrival order", () => {
+  expect(
+    buildReceivedWordText([
+      [
+        { word: "Great", startSeconds: 0.2, endSeconds: 0.4 },
+        { word: "question!", startSeconds: 0.4, endSeconds: 0.8 },
+      ],
+      [{ word: "Here", startSeconds: 0.1, endSeconds: 0.3 }],
+    ]),
+  ).toBe("Great question! Here");
+});
+
+test("does not move assistant draft backwards when playback timing lags", () => {
+  expect(
+    selectAssistantDraftText(
+      "Great question! Based on recent updates",
+      "Great question! Based",
+    ),
+  ).toBe("Great question! Based on recent updates");
+});
+
 test("merges repeated word timestamp batches for the same TTS item", () => {
   expect(
     mergeAssistantWordTimings(
@@ -168,4 +192,44 @@ test("merges repeated word timestamp batches for the same TTS item", () => {
     { word: "episodes", startSeconds: 0.44, endSeconds: 1.05 },
     { word: "2026", startSeconds: 1.06, endSeconds: 1.42 },
   ]);
+});
+
+test("anchors reset word timestamp batches to playback progress", () => {
+  const merged = mergeAssistantWordTimings(
+    [
+      { word: "recent", startSeconds: 0.54, endSeconds: 0.83 },
+      { word: "months.", startSeconds: 4.76, endSeconds: 5.24 },
+    ],
+    [
+      { word: "Here", startSeconds: 0.15, endSeconds: 0.51 },
+      { word: "are", startSeconds: 0.54, endSeconds: 0.69 },
+    ],
+    2,
+  );
+
+  expect(merged.map((timing) => timing.word)).toEqual([
+    "recent",
+    "months.",
+    "Here",
+    "are",
+  ]);
+  expect(merged[2].startSeconds).toBeCloseTo(2);
+  expect(merged[2].endSeconds).toBeCloseTo(2.36);
+  expect(merged[3].startSeconds).toBeCloseTo(2.39);
+  expect(merged[3].endSeconds).toBeCloseTo(2.54);
+  expect(merged.slice(0, 2)).toEqual([
+    { word: "recent", startSeconds: 0.54, endSeconds: 0.83 },
+    { word: "months.", startSeconds: 4.76, endSeconds: 5.24 },
+  ]);
+});
+
+test("commits the complete generated reply when spoken-word draft lags", () => {
+  expect(
+    selectCompletedAssistantText(
+      "Great question! Based on recent updates, Together AI has released several",
+      "Great question! Based on recent updates, Together AI has released several new models over the past several months.",
+    ),
+  ).toBe(
+    "Great question! Based on recent updates, Together AI has released several new models over the past several months.",
+  );
 });

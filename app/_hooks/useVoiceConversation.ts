@@ -728,9 +728,25 @@ export function useVoiceConversation() {
       mergeAssistantWordTimings(
         ttsWordTimingsRef.current.get(event.itemId) ?? [],
         timings,
+        getPlaybackElapsedForItem(event.itemId),
       ),
     );
+    const receivedText = buildReceivedWordText([
+      ...ttsWordTimingsRef.current.values(),
+    ]);
+    const nextDraft = selectAssistantDraftText(
+      assistantDraftRef.current,
+      receivedText,
+    );
+    if (nextDraft !== assistantDraftRef.current) setAssistantDraftText(nextDraft);
     startAssistantWordSync();
+  }
+
+  function getPlaybackElapsedForItem(itemId: string) {
+    const audioContext = audioContextRef.current;
+    const startedAt = ttsAudioStartsRef.current.get(itemId);
+    if (!audioContext || startedAt === undefined) return undefined;
+    return Math.max(0, audioContext.currentTime - startedAt);
   }
 
   function scheduleAssistantWordsForItem(itemId: string) {
@@ -765,8 +781,12 @@ export function useVoiceConversation() {
     }
 
     const spokenText = buildSpokenTextAtTime(tracks, audioContext.currentTime);
-    if (spokenText !== assistantDraftRef.current) {
-      setAssistantDraftText(spokenText);
+    const nextDraft = selectAssistantDraftText(
+      assistantDraftRef.current,
+      spokenText,
+    );
+    if (nextDraft !== assistantDraftRef.current) {
+      setAssistantDraftText(nextDraft);
     }
   }
 
@@ -785,7 +805,10 @@ export function useVoiceConversation() {
 
   function commitCompletedAssistantDraft() {
     const text =
-      assistantDraftRef.current.trim() || assistantGeneratedTextRef.current.trim();
+      selectCompletedAssistantText(
+        assistantDraftRef.current,
+        assistantGeneratedTextRef.current,
+      );
     commitAssistantText(text);
     resetAssistantSpeechTracking();
   }
@@ -1091,19 +1114,34 @@ export function buildSpokenTextAtTime(
     .reduce(appendSpokenWordText, "");
 }
 
+export function buildReceivedWordText(timingGroups: AssistantWordTiming[][]) {
+  return timingGroups
+    .flatMap((timings) => timings.map((timing) => timing.word))
+    .reduce(appendSpokenWordText, "");
+}
+
+export function selectAssistantDraftText(current: string, next: string) {
+  const currentWordCount = countDisplayWords(current);
+  const nextWordCount = countDisplayWords(next);
+  return nextWordCount >= currentWordCount ? next : current;
+}
+
 export function mergeAssistantWordTimings(
   existing: AssistantWordTiming[],
   incoming: AssistantWordTiming[],
+  playbackElapsedSeconds?: number,
 ) {
   if (existing.length === 0) return incoming;
   if (incoming.length === 0) return existing;
 
   const last = existing[existing.length - 1];
   const firstIncoming = incoming[0];
-  const offset =
-    firstIncoming.startSeconds < last.endSeconds
-      ? last.endSeconds
-      : 0;
+  const isResetBatch = firstIncoming.startSeconds < last.endSeconds;
+  const playbackOffset =
+    playbackElapsedSeconds === undefined
+      ? undefined
+      : Math.max(0, playbackElapsedSeconds - firstIncoming.startSeconds);
+  const offset = isResetBatch ? playbackOffset ?? last.endSeconds : 0;
 
   return [
     ...existing,
@@ -1113,6 +1151,14 @@ export function mergeAssistantWordTimings(
       endSeconds: timing.endSeconds + offset,
     })),
   ];
+}
+
+export function selectCompletedAssistantText(draft: string, generated: string) {
+  return generated.trim() || draft.trim();
+}
+
+function countDisplayWords(text: string) {
+  return text.trim().split(/\s+/u).filter(Boolean).length;
 }
 
 export function appendAssistantTurn(turns: Turn[], text: string) {
