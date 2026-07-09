@@ -509,6 +509,8 @@ export function useVoiceConversation() {
     if (hasSpeech) {
       // Pre-roll must lead the opening frame or speech onsets are clipped.
       if (!speechOpenRef.current) {
+        const nextPhase = getPhaseAfterLocalSpeechStart(phaseRef.current);
+        if (nextPhase !== phaseRef.current) updatePhase(nextPhase);
         sendClientEvent({ type: "speech.started" }, socket);
         micBufferRef.current.push(...preRollRef.current);
         micBufferSamplesRef.current += preRollSamplesRef.current;
@@ -863,6 +865,10 @@ export function settleLastUserTurn(turns: Turn[]) {
     }
   }
   return next;
+}
+
+export function getPhaseAfterLocalSpeechStart(phase: Phase): Phase {
+  return phase === "thinking" ? "listening" : phase;
 }
 
 export function appendAssistantTurn(turns: Turn[], text: string) {

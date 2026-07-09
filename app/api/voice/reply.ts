@@ -42,7 +42,7 @@ export async function generateAssistantReply({
   const messages: TogetherMessage[] = [
     {
       role: "system",
-      content: `${systemPrompt} Current date: ${new Date().toISOString().slice(0, 10)}.`,
+      content: buildSystemMessageContent(),
     },
     ...history,
   ];
@@ -68,6 +68,22 @@ export async function generateAssistantReply({
   }
 
   throw lastError ?? new Error("Reply generation failed.");
+}
+
+export function buildSystemMessageContent(now = new Date()) {
+  const isoDate = now.toISOString().slice(0, 10);
+  const spokenDate = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(now);
+
+  return (
+    `${systemPrompt} Today is ${spokenDate} (${isoDate}, UTC). ` +
+    "Use web_search for current or recent facts, including sports, schedules, news, and weather; don't answer those from memory."
+  );
 }
 
 async function answerWithModel(

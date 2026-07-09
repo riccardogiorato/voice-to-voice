@@ -204,6 +204,7 @@ export class VoiceSession {
     if (event.type === "speech.started") {
       this.userSpeechActive = true;
       this.pausePendingAnswer();
+      this.send("state", { state: "listening" });
       // The user resumed speaking shortly after their last turn, before
       // hearing any reply: void the in-flight answer now and let the
       // upcoming transcript merge into the previous turn. Measured from

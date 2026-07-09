@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   applyTranscriptFinalToTurns,
   buildTranscriptItems,
+  getPhaseAfterLocalSpeechStart,
   getTranscriptPartialFromDelta,
 } from "./useVoiceConversation";
 
@@ -37,7 +38,7 @@ test("updates the current user turn for merged transcript finals", () => {
   ).toEqual([
     { role: "user", text: "Tell me who won the last World Cup." },
     { role: "assistant", text: "Argentina won in 2022." },
-    { role: "user", text: "Wait, are you sure?" },
+    { role: "user", text: "Wait, are you sure?", settled: false },
   ]);
 });
 
@@ -60,7 +61,7 @@ test("does not rewrite older user turns across an assistant turn", () => {
     { role: "assistant", text: "Argentina won in 2022." },
     { role: "user", text: "Wait" },
     { role: "assistant", text: "Let me correct that." },
-    { role: "user", text: "Wait, are you sure?" },
+    { role: "user", text: "Wait, are you sure?", settled: false },
   ]);
 });
 
@@ -79,4 +80,10 @@ test("live partials append instead of rewriting older user turns across an assis
     { role: "assistant", text: "Let me correct that." },
     { role: "user", text: "Wait are you sure?", live: true },
   ]);
+});
+
+test("local speech start exits thinking so the thinking sound stops immediately", () => {
+  expect(getPhaseAfterLocalSpeechStart("thinking")).toBe("listening");
+  expect(getPhaseAfterLocalSpeechStart("listening")).toBe("listening");
+  expect(getPhaseAfterLocalSpeechStart("speaking")).toBe("speaking");
 });

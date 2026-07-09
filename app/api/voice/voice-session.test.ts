@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { VoiceSession } from "./voice-session";
-import { REPLY_GRACE_MS } from "./voice-utils";
+import { REPLY_GRACE_INCOMPLETE_MS } from "./voice-utils";
 
 const originalTogetherKey = process.env.TOGETHER_API_KEY;
 
@@ -15,9 +15,10 @@ test("keeps a pending user utterance when speech resumes before reply grace expi
   const session = new VoiceSession(client as any);
   const scheduled: Array<{ rawTranscript: string; merged: boolean }> = [];
 
-  (session as any).settleTranscriptAndAnswer = (
+  (session as any).startTurn = (
     rawTranscript: string,
     merged: boolean,
+    _transcriptId: number,
   ) => {
     scheduled.push({ rawTranscript, merged });
   };
@@ -37,7 +38,7 @@ test("keeps a pending user utterance when speech resumes before reply grace expi
     }),
   );
 
-  await delay(REPLY_GRACE_MS + 50);
+  await delay(REPLY_GRACE_INCOMPLETE_MS + 50);
 
   expect(scheduled).toEqual([
     {
@@ -45,6 +46,16 @@ test("keeps a pending user utterance when speech resumes before reply grace expi
       merged: true,
     },
   ]);
+});
+
+test("reports listening when user speech starts during a pending answer", () => {
+  process.env.TOGETHER_API_KEY = "test-key";
+  const client = new FakeClientSocket();
+  const session = new VoiceSession(client as any);
+
+  (session as any).handleClientMessage(rawMessage({ type: "speech.started" }));
+
+  expect(client.sent).toContainEqual({ type: "state", state: "listening" });
 });
 
 test("recovers to listening when TTS never sends audio done", async () => {

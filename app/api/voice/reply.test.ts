@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { generateAssistantReply } from "./reply";
+import { buildSystemMessageContent, generateAssistantReply } from "./reply";
 import { setToolCallRunnerForTest } from "./tools";
 
 const originalFetch = globalThis.fetch;
@@ -115,6 +115,16 @@ test("strips a leading final channel marker from reply deltas", async () => {
 
   expect(reply).toBe("The alphabet is transcribing correctly.");
   expect(deltas).toEqual(["The alphabet is transcribing correctly."]);
+});
+
+test("grounds the assistant prompt in the current date and requires search for current facts", () => {
+  const prompt = buildSystemMessageContent(new Date("2026-07-09T12:00:00.000Z"));
+
+  expect(prompt).toContain("Today is Thursday, July 9, 2026 (2026-07-09, UTC).");
+  expect(prompt).toContain("current or recent facts");
+  expect(prompt).toContain("sports");
+  expect(prompt).toContain("Use web_search");
+  expect(prompt).toContain("don't answer those from memory");
 });
 
 function sseResponse(chunks: unknown[]) {
