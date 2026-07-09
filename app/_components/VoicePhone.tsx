@@ -12,7 +12,6 @@ import {
   VoiceOrbButton,
   VoiceSettingsPanel,
   VoiceStatusPill,
-  VoiceWaveform,
 } from "@/app/_components/voice";
 
 type VoiceConversation = ReturnType<typeof useVoiceConversation>;
@@ -42,6 +41,7 @@ const phaseCopy: Record<VoiceConversation["phase"], { label: string; detail: str
 
 export function VoicePhone({ voice }: { voice: VoiceConversation }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [messagesOpen, setMessagesOpen] = useState(true);
   const status =
     voice.muted && voice.isActive
       ? { label: "Muted", detail: "Tap the mic to resume" }
@@ -83,27 +83,27 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                 onClick={voice.startConversation}
               />
 
-              <VoiceWaveform active={waveformVisible} activity={voiceActivity} />
-
               <VoiceMicMeter active={micMeterVisible} level={micLevel} />
 
               <VoiceStatusPill label={status.label} detail={status.detail} />
             </div>
 
             <div className="space-y-4">
-              <VoiceConversationStream
-                items={voice.conversationItems}
-                scrollRef={voice.conversationScrollRef}
-              />
+              {messagesOpen ? (
+                <VoiceConversationStream
+                  items={voice.conversationItems}
+                  scrollRef={voice.conversationScrollRef}
+                />
+              ) : null}
 
               {voice.error ? <VoiceNotice message={voice.error} /> : null}
 
               {voice.isActive ? (
                 <VoiceActiveControls
                   muted={voice.muted}
-                  showReset={voice.turns.length > 0}
+                  messagesOpen={messagesOpen}
+                  onToggleMessages={() => setMessagesOpen((open) => !open)}
                   onToggleMute={voice.toggleMute}
-                  onReset={voice.resetConversation}
                   onStop={voice.stopConversation}
                 />
               ) : voice.turns.length > 0 ? (

@@ -6,7 +6,7 @@ export {
   VoiceNewConversationButton,
 } from "./Controls";
 export { VoiceConversationStream } from "./ConversationStream";
-export { VoiceMicMeter, VoiceWaveform } from "./Meters";
+export { VoiceMicMeter } from "./Meters";
 export { VoiceNotice } from "./Notice";
 export { VoiceOrbButton } from "./OrbButton";
 export { VoiceSettingsPanel } from "./SettingsPanel";

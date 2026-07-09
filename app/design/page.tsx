@@ -1,4 +1,4 @@
-import { MicOff, RotateCcw, SlidersHorizontal, X } from "lucide-react";
+import { MessageCircle, MicOff, SlidersHorizontal, X } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   ToolActivityRow,
@@ -12,7 +12,6 @@ import {
   VoiceOrbButton,
   VoiceSettingsPanel,
   VoiceStatusPill,
-  VoiceWaveform,
   type VoiceOrbPhase,
 } from "@/app/_components/voice";
 import type {
@@ -103,12 +102,11 @@ export default function DesignPage() {
                 <VoiceBrandHeader />
                 <div className="flex flex-1 flex-col items-center justify-center gap-5 pb-5">
                   <VoiceOrbButton phase="listening" activity={0.54} />
-                  <VoiceWaveform active activity={0.58} />
                   <VoiceMicMeter active level={0.64} />
                   <VoiceStatusPill label="Listening" detail="Live" />
                 </div>
                 <VoiceConversationStream items={conversationItems} />
-                <VoiceActiveControls muted={false} showReset />
+                <VoiceActiveControls muted={false} messagesOpen />
               </div>
             </div>
           </Specimen>
@@ -131,10 +129,8 @@ export default function DesignPage() {
             </Specimen>
 
             <section className="grid gap-5 xl:grid-cols-2">
-              <Specimen title="Meters">
+              <Specimen title="Mic Meter">
                 <div className="flex flex-col items-center gap-5 rounded-[18px] bg-white/48 p-5">
-                  <VoiceWaveform active activity={0.78} />
-                  <VoiceWaveform activity={0} />
                   <VoiceMicMeter active level={0.7} />
                   <VoiceMicMeter level={0} />
                 </div>
@@ -177,17 +173,18 @@ export default function DesignPage() {
 
               <Specimen title="Controls">
                 <div className="flex flex-col gap-5">
-                  <VoiceActiveControls muted={false} showReset />
+                  <VoiceActiveControls muted={false} messagesOpen />
+                  <VoiceActiveControls muted messagesOpen={false} />
                   <VoiceNewConversationButton />
                   <div className="flex items-center gap-4">
                     <VoiceIconButton label="Settings" size="md">
                       <SlidersHorizontal className="size-4" aria-hidden />
                     </VoiceIconButton>
+                    <VoiceIconButton label="Messages" tone="dark">
+                      <MessageCircle className="size-5" aria-hidden />
+                    </VoiceIconButton>
                     <VoiceIconButton label="Muted" tone="dark">
                       <MicOff className="size-5" aria-hidden />
-                    </VoiceIconButton>
-                    <VoiceIconButton label="Reset" size="sm" tone="muted">
-                      <RotateCcw className="size-4" aria-hidden />
                     </VoiceIconButton>
                     <VoiceIconButton label="End">
                       <X className="size-5" aria-hidden />

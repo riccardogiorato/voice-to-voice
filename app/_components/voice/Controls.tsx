@@ -1,4 +1,4 @@
-import { Mic, MicOff, RotateCcw, X } from "lucide-react";
+import { MessageCircle, Mic, MicOff, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { cx } from "./utils";
 
@@ -80,30 +80,28 @@ export function VoiceMuteButton({
 
 export function VoiceActiveControls({
   muted,
-  showReset,
+  messagesOpen,
+  onToggleMessages,
   onToggleMute,
-  onReset,
   onStop,
 }: {
   muted: boolean;
-  showReset?: boolean;
+  messagesOpen: boolean;
+  onToggleMessages?: () => void;
   onToggleMute?: () => void;
-  onReset?: () => void;
   onStop?: () => void;
 }) {
   return (
     <div className="flex min-h-[64px] items-center justify-between px-1">
+      <VoiceIconButton
+        label={messagesOpen ? "Hide messages" : "Show messages"}
+        onClick={onToggleMessages}
+        pressed={messagesOpen}
+        tone={messagesOpen ? "dark" : "default"}
+      >
+        <MessageCircle className="size-5" aria-hidden />
+      </VoiceIconButton>
       <VoiceMuteButton muted={muted} onClick={onToggleMute} />
-      {showReset ? (
-        <VoiceIconButton
-          label="New conversation"
-          size="sm"
-          tone="muted"
-          onClick={onReset}
-        >
-          <RotateCcw className="size-4" aria-hidden />
-        </VoiceIconButton>
-      ) : null}
       <VoiceIconButton label="End conversation" onClick={onStop}>
         <X className="size-5" aria-hidden />
       </VoiceIconButton>

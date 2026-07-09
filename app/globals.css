@@ -119,29 +119,84 @@ button {
     0 0 calc(20px + (var(--voice-activity) * 28px)) rgba(239, 44, 193, calc(0.16 + (var(--voice-activity) * 0.2)));
 }
 
+.voice-orb-connecting {
+  opacity: 0.88;
+  filter:
+    grayscale(0.28)
+    saturate(0.6)
+    drop-shadow(0 16px 26px rgba(139, 118, 168, 0.14))
+    drop-shadow(0 28px 46px rgba(92, 78, 112, 0.08));
+}
+
+.voice-orb-connecting::before,
+.voice-orb-connecting::after {
+  animation-duration: 9s;
+  opacity: 0.42;
+}
+
+.voice-orb-connecting .voice-orb-core {
+  background:
+    radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.78), transparent 23%),
+    radial-gradient(circle at 52% 48%, rgba(198, 168, 244, 0.5), transparent 42%),
+    radial-gradient(circle at 70% 76%, rgba(130, 115, 148, 0.28), transparent 35%),
+    linear-gradient(145deg, rgba(218, 210, 232, 0.86), rgba(174, 154, 202, 0.72));
+}
+
+.voice-orb-listening {
+  filter:
+    drop-shadow(0 18px 30px rgba(239, 44, 193, 0.24))
+    drop-shadow(0 32px 54px rgba(252, 76, 2, 0.12));
+}
+
 .voice-orb-listening::before,
 .voice-orb-listening::after {
   animation-duration: 3.6s;
+  opacity: calc(0.66 + (var(--voice-activity) * 0.24));
 }
 
 .voice-orb-thinking {
   filter:
-    drop-shadow(0 18px 30px rgba(252, 76, 2, 0.24))
-    drop-shadow(0 34px 58px rgba(239, 44, 193, 0.14));
+    hue-rotate(18deg)
+    saturate(1.18)
+    drop-shadow(0 18px 30px rgba(252, 76, 2, 0.28))
+    drop-shadow(0 34px 58px rgba(239, 44, 193, 0.12));
 }
 
 .voice-orb-thinking::before,
 .voice-orb-thinking::after {
-  animation-duration: 2.7s;
+  animation-duration: 1.8s;
+  opacity: 0.86;
+}
+
+.voice-orb-thinking .voice-orb-core {
+  background:
+    radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.82), transparent 22%),
+    radial-gradient(circle at 50% 44%, rgba(252, 76, 2, 0.84), transparent 42%),
+    radial-gradient(circle at 70% 76%, rgba(239, 44, 193, 0.5), transparent 35%),
+    linear-gradient(145deg, rgba(252, 188, 128, 0.92), rgba(252, 76, 2, 0.78));
 }
 
 .voice-orb-speaking {
   animation: orb-pulse 1.45s ease-in-out infinite;
+  filter:
+    saturate(1.28)
+    contrast(1.04)
+    drop-shadow(0 18px 32px rgba(239, 44, 193, 0.3))
+    drop-shadow(0 34px 62px rgba(252, 76, 2, 0.18));
 }
 
 .voice-orb-speaking::before,
 .voice-orb-speaking::after {
   animation-duration: 2.2s;
+  opacity: 0.94;
+}
+
+.voice-orb-speaking .voice-orb-core {
+  background:
+    radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.86), transparent 22%),
+    radial-gradient(circle at 52% 48%, rgba(239, 44, 193, 0.94), transparent 42%),
+    radial-gradient(circle at 72% 76%, rgba(252, 76, 2, 0.84), transparent 35%),
+    linear-gradient(145deg, rgba(198, 168, 244, 0.86), rgba(239, 44, 193, 0.96));
 }
 
 .voice-orb-idle {
@@ -182,11 +237,6 @@ button {
     0 0 12px rgba(80, 74, 88, 0.08);
 }
 
-.voice-orb-connecting::before,
-.voice-orb-connecting::after {
-  animation-duration: 2s;
-}
-
 .conversation-stream {
   position: relative;
   min-height: 132px;
@@ -225,44 +275,6 @@ button {
   cursor: default;
 }
 
-.voice-waveform {
-  --voice-activity: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: min(38vw, 150px);
-  height: 24px;
-  gap: 4px;
-  opacity: 0;
-  transform: translateY(-4px) scale(0.96);
-  transition-property: opacity, transform;
-  transition-duration: 180ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-}
-
-.voice-waveform-active {
-  opacity: 1;
-  transform: translateY(0) scale(1);
-}
-
-.voice-waveform span {
-  --bar-gain: 0.5;
-  width: 4px;
-  height: 20px;
-  border-radius: 999px;
-  background:
-    linear-gradient(180deg, rgba(239, 44, 193, 0.92), rgba(252, 76, 2, 0.76)),
-    rgba(5, 5, 5, 0.12);
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.34),
-    0 6px 16px rgba(239, 44, 193, 0.16);
-  transform: scaleY(calc(0.18 + (var(--voice-activity) * var(--bar-gain) * 0.82)));
-  transform-origin: 50% 50%;
-  transition-property: transform, opacity;
-  transition-duration: 90ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-}
-
 .voice-mic-meter {
   --mic-level: 0;
   display: flex;
@@ -271,7 +283,7 @@ button {
   gap: 3px;
   width: min(34vw, 132px);
   height: 18px;
-  margin-top: -10px;
+  margin-top: 0;
   opacity: 0;
   transform: translateY(-2px) scale(0.96);
   transition-property: opacity, transform;
