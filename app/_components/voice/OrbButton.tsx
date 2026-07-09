@@ -18,8 +18,8 @@ export function VoiceOrbButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      aria-label="Start conversation"
-      title={disabled ? undefined : "Start conversation"}
+      aria-label="Start voice chat"
+      title={disabled ? undefined : "Start voice chat"}
     >
       <VoiceShaderOrb phase={phase} activity={activity} />
     </button>

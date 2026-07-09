@@ -22,12 +22,12 @@ type OrbParams = {
 
 const STATE_PARAMS: Record<ShaderOrbState, OrbParams> = {
   idle: {
-    speed: 0.1,
-    amplitude: 0.025,
-    glow: 0.15,
-    brightness: 0.55,
+    speed: 0.14,
+    amplitude: 0.035,
+    glow: 0.2,
+    brightness: 0.98,
     pulse: 0,
-    saturation: 0.7,
+    saturation: 0.78,
   },
   connecting: {
     speed: 0.34,
@@ -168,7 +168,7 @@ void main() {
   col += vein * mix(u_color1, vec3(1.0), 0.3);
 
   float centerDist = dist / radius;
-  float depthShade = 1.0 - centerDist * centerDist * 0.4;
+  float depthShade = 1.0 - centerDist * centerDist * 0.24;
   col *= depthShade;
 
   float rim = pow(centerDist, 4.0) * 0.18;

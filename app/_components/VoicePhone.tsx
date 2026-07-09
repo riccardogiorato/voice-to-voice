@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import type { useVoiceConversation } from "@/app/_hooks/useVoiceConversation";
 import {
   VoiceActiveControls,
@@ -18,8 +18,8 @@ type VoiceConversation = ReturnType<typeof useVoiceConversation>;
 
 const phaseCopy: Record<VoiceConversation["phase"], { label: string; detail: string }> = {
   idle: {
-    label: "Tap the orb",
-    detail: "Start talking",
+    label: "Tap anywhere",
+    detail: "Start voice chat",
   },
   connecting: {
     label: "Connecting",
@@ -55,13 +55,25 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
         ? Math.max(waveformVisible ? voice.micActivity : 0, voice.micLevel * 0.24)
         : 0;
   const micLevel = micMeterVisible ? voice.micLevel : 0;
+  const canStartFromSurface = !voice.isActive && !settingsOpen;
+
+  function handleSurfaceClick(event: MouseEvent<HTMLElement>) {
+    if (!canStartFromSurface) return;
+    if (isInteractiveTarget(event.target)) return;
+    void voice.startConversation();
+  }
 
   return (
     <main className="min-h-dvh overflow-hidden bg-[#faf9f6] text-[#050505]">
       <div className="relative flex min-h-dvh items-stretch justify-center lg:items-center lg:px-8 lg:py-6">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(198,168,244,0.34),transparent_26%),radial-gradient(circle_at_78%_18%,rgba(239,44,193,0.18),transparent_24%),radial-gradient(circle_at_54%_88%,rgba(252,76,2,0.16),transparent_30%)]" />
 
-        <section className="phone-shell relative flex min-h-dvh w-full flex-col overflow-hidden bg-[#fdfcf9] lg:h-[min(860px,calc(100dvh-48px))] lg:min-h-0 lg:max-w-[430px] lg:shadow-[0_0_0_10px_#050505,0_24px_70px_rgba(5,5,5,0.22)]">
+        <section
+          className={`phone-shell relative flex min-h-dvh w-full flex-col overflow-hidden bg-[#fdfcf9] lg:h-[min(860px,calc(100dvh-48px))] lg:min-h-0 lg:max-w-[430px] lg:shadow-[0_0_0_10px_#050505,0_24px_70px_rgba(5,5,5,0.22)] ${
+            canStartFromSurface ? "cursor-pointer" : ""
+          }`}
+          onClick={handleSurfaceClick}
+        >
           <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(198,168,244,0.18),rgba(255,255,255,0)_24%),radial-gradient(circle_at_100%_5%,rgba(239,44,193,0.12),transparent_24%),radial-gradient(circle_at_0%_95%,rgba(252,76,2,0.1),transparent_28%)]" />
 
           <header className="relative z-10 px-7 pt-7">
@@ -119,5 +131,16 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
         </section>
       </div>
     </main>
+  );
+}
+
+function isInteractiveTarget(target: EventTarget | null) {
+  return (
+    target instanceof Element &&
+    Boolean(
+      target.closest(
+        'a,button,input,textarea,select,summary,[role="button"],[contenteditable="true"]',
+      ),
+    )
   );
 }

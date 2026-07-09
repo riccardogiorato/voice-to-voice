@@ -138,7 +138,7 @@ export default function DesignPage() {
 
               <Specimen title="Status Pills">
                 <div className="flex flex-wrap gap-3">
-                  <VoiceStatusPill label="Tap the orb" detail="Start talking" />
+                  <VoiceStatusPill label="Tap anywhere" detail="Start voice chat" />
                   <VoiceStatusPill label="Thinking" detail="Working" />
                   <VoiceStatusPill label="Speaking" detail="Replying" />
                 </div>
