@@ -284,14 +284,3 @@ button {
     transform: scale(1.055);
   }
 }
-
-@keyframes thinking-meter {
-  0%,
-  100% {
-    transform: scaleY(0.68);
-  }
-
-  50% {
-    transform: scaleY(1.18);
-  }
-}

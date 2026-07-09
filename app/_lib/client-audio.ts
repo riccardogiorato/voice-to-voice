@@ -30,11 +30,16 @@ const VAD_OPEN_THRESHOLD = 0.62;
 const VAD_CLOSE_THRESHOLD = 0.38;
 const TEN_VAD_SAMPLE_RATE = 16_000;
 const TEN_VAD_HOP_SIZE = 256;
-const THINKING_BASE_GAIN = 0.012;
+const THINKING_SOUND_URL = "/thinking-sounds/gemini-bips-loop.mp3";
+const THINKING_ASSET_BASE_GAIN = 0.126;
 
 export type ThinkingSoundHandle = {
   setVolume: (volume: number) => void;
   stop: () => void;
+};
+
+type WindowWithAudioContext = Window & {
+  webkitAudioContext?: typeof AudioContext;
 };
 
 export function getVoiceSocketUrl() {
@@ -183,88 +188,75 @@ export function normalizeRange(value: number, floor: number, ceiling: number) {
   return clamp01((value - floor) / (ceiling - floor));
 }
 
+export function createInteractiveAudioContext() {
+  const AudioContextCtor =
+    window.AudioContext ?? (window as WindowWithAudioContext).webkitAudioContext;
+  if (!AudioContextCtor) throw new Error("Web Audio is not available in this browser.");
+  return new AudioContextCtor({ latencyHint: "interactive" });
+}
+
 export function createThinkingSound(
   audioContext: AudioContext,
   volume = 1,
 ): ThinkingSoundHandle {
   const master = audioContext.createGain();
   master.gain.value = 0;
-
-  const filter = audioContext.createBiquadFilter();
-  filter.type = "lowpass";
-  filter.frequency.value = 760;
-  filter.Q.value = 0.5;
-
-  const noiseBuffer = audioContext.createBuffer(
-    1,
-    Math.max(1, Math.floor(audioContext.sampleRate * 1.6)),
-    audioContext.sampleRate,
-  );
-  const noise = noiseBuffer.getChannelData(0);
-  for (let index = 0; index < noise.length; index += 1) {
-    noise[index] = (Math.random() * 2 - 1) * 0.18;
-  }
-
-  const noiseSource = audioContext.createBufferSource();
-  noiseSource.buffer = noiseBuffer;
-  noiseSource.loop = true;
-
-  const oscillator = audioContext.createOscillator();
-  oscillator.type = "sine";
-  oscillator.frequency.value = 174;
-
-  const toneGain = audioContext.createGain();
-  toneGain.gain.value = 0.018;
-
-  const lfo = audioContext.createOscillator();
-  lfo.type = "sine";
-  lfo.frequency.value = 0.42;
-
-  const lfoGain = audioContext.createGain();
-  lfoGain.gain.value = 0.005;
-
-  noiseSource.connect(filter);
-  filter.connect(master);
-  oscillator.connect(toneGain);
-  toneGain.connect(master);
-  lfo.connect(lfoGain);
-  lfoGain.connect(master.gain);
   master.connect(audioContext.destination);
 
-  noiseSource.start();
-  oscillator.start();
-  lfo.start();
+  let source: AudioBufferSourceNode | null = null;
+  let stopped = false;
+  let currentVolume = clamp01(volume);
 
   const setVolume = (nextVolume: number) => {
+    currentVolume = clamp01(nextVolume);
+
     master.gain.setTargetAtTime(
-      THINKING_BASE_GAIN * clamp01(nextVolume),
+      THINKING_ASSET_BASE_GAIN * currentVolume,
       audioContext.currentTime,
       0.025,
     );
   };
+
+  void fetch(THINKING_SOUND_URL)
+    .then((response) => {
+      if (!response.ok) throw new Error("Thinking sound asset failed to load.");
+      return response.arrayBuffer();
+    })
+    .then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
+    .then((buffer) => {
+      if (stopped) return;
+
+      source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      source.connect(master);
+      source.start();
+      setVolume(currentVolume);
+    })
+    .catch(() => {});
+
   setVolume(volume);
 
   return {
     setVolume,
     stop: () => {
+      stopped = true;
+
       try {
-        master.gain.setTargetAtTime(0, audioContext.currentTime, 0.03);
+        master.gain.setTargetAtTime(0, audioContext.currentTime, 0.025);
       } catch {}
 
       setTimeout(() => {
         try {
-          noiseSource.stop();
+          source?.stop();
         } catch {}
         try {
-          oscillator.stop();
-        } catch {}
-        try {
-          lfo.stop();
+          source?.disconnect();
         } catch {}
         try {
           master.disconnect();
         } catch {}
-      }, 90);
+      }, 80);
     },
   };
 }
