@@ -1,4 +1,4 @@
-import { MessageCircle, MicOff, SlidersHorizontal, X } from "lucide-react";
+import { MessageSquareOff, MessageSquareText, MicOff, SlidersHorizontal, X } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   ToolActivityRow,
@@ -180,13 +180,16 @@ export default function DesignPage() {
                     <VoiceIconButton label="Settings" size="md">
                       <SlidersHorizontal className="size-4" aria-hidden />
                     </VoiceIconButton>
-                    <VoiceIconButton label="Messages" tone="dark">
-                      <MessageCircle className="size-5" aria-hidden />
+                    <VoiceIconButton label="Messages" size="md" tone="soft">
+                      <MessageSquareText className="size-5" aria-hidden />
                     </VoiceIconButton>
-                    <VoiceIconButton label="Muted" tone="dark">
-                      <MicOff className="size-5" aria-hidden />
+                    <VoiceIconButton label="Messages hidden" size="md" tone="soft">
+                      <MessageSquareOff className="size-5" aria-hidden />
                     </VoiceIconButton>
-                    <VoiceIconButton label="End">
+                    <VoiceIconButton label="Muted" size="xl" tone="voice">
+                      <MicOff className="size-6" aria-hidden />
+                    </VoiceIconButton>
+                    <VoiceIconButton label="End" size="md" tone="dark">
                       <X className="size-5" aria-hidden />
                     </VoiceIconButton>
                   </div>

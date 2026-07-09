@@ -1,6 +1,51 @@
-import { MessageCircle, Mic, MicOff, X } from "lucide-react";
+import { MessageSquareOff, MessageSquareText, Mic, MicOff, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { cx } from "./utils";
+
+type VoiceIconButtonSize = "sm" | "md" | "lg" | "xl";
+type VoiceIconButtonTone =
+  | "default"
+  | "dark"
+  | "muted"
+  | "soft"
+  | "softActive"
+  | "voice";
+
+const sizeClasses: Record<VoiceIconButtonSize, string> = {
+  sm: "size-10",
+  md: "size-12",
+  lg: "size-14",
+  xl: "size-16",
+};
+
+const toneClasses: Record<VoiceIconButtonTone, string> = {
+  default:
+    "bg-white text-[#050505]/80 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_8px_rgba(5,5,5,0.06)]",
+  dark:
+    "bg-[#050505] text-white shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_8px_rgba(5,5,5,0.06)]",
+  muted: "bg-white/70 text-[#050505]/55 shadow-[0_0_0_1px_rgba(5,5,5,0.06)]",
+  soft:
+    "bg-white/74 text-[#6b5a82] shadow-[0_0_0_1px_rgba(5,5,5,0.06),0_6px_16px_rgba(65,42,78,0.06)]",
+  softActive:
+    "bg-[#f4edff] text-[#6b3f91] shadow-[0_0_0_1px_rgba(127,79,172,0.12),0_8px_20px_rgba(65,42,78,0.08)]",
+  voice:
+    "bg-[linear-gradient(145deg,#c6a8f4_0%,#ef2cc1_54%,#fc4c02_100%)] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.42),0_10px_24px_rgba(239,44,193,0.22),0_16px_34px_rgba(252,76,2,0.16)]",
+};
+
+const hoverClasses: Record<VoiceIconButtonTone, string> = {
+  default:
+    "hover:text-[#050505]/85 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.12),0_3px_12px_rgba(5,5,5,0.08)]",
+  dark:
+    "hover:bg-[#1f1824] hover:text-white hover:shadow-[0_0_0_1px_rgba(5,5,5,0.1),0_8px_20px_rgba(5,5,5,0.16)]",
+  muted:
+    "hover:text-[#050505]/85 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.12),0_3px_12px_rgba(5,5,5,0.08)]",
+  soft:
+    "hover:bg-white hover:text-[#6b3f91] hover:shadow-[0_0_0_1px_rgba(127,79,172,0.14),0_8px_20px_rgba(65,42,78,0.09)]",
+  softActive:
+    "hover:bg-white hover:text-[#6b3f91] hover:shadow-[0_0_0_1px_rgba(127,79,172,0.14),0_8px_20px_rgba(65,42,78,0.09)]",
+  voice:
+    "hover:text-white hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_12px_28px_rgba(239,44,193,0.28),0_18px_38px_rgba(252,76,2,0.2)]",
+};
 
 export function VoiceIconButton({
   label,
@@ -14,24 +59,16 @@ export function VoiceIconButton({
   children: ReactNode;
   onClick?: () => void;
   pressed?: boolean;
-  size?: "sm" | "md" | "lg";
-  tone?: "default" | "dark" | "muted";
+  size?: VoiceIconButtonSize;
+  tone?: VoiceIconButtonTone;
 }) {
-  const sizeClass = size === "lg" ? "size-14" : size === "md" ? "size-10" : "size-11";
-  const toneClass =
-    tone === "dark"
-      ? "bg-[#050505] text-white shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_8px_rgba(5,5,5,0.06)]"
-      : tone === "muted"
-        ? "bg-white/70 text-[#050505]/55 shadow-[0_0_0_1px_rgba(5,5,5,0.06)]"
-        : "bg-white text-[#050505]/80 shadow-[0_0_0_1px_rgba(5,5,5,0.08),0_2px_8px_rgba(5,5,5,0.06)]";
-
   return (
     <button
       className={cx(
         "grid place-items-center rounded-full transition-[background-color,box-shadow,scale,color] duration-150 active:scale-[0.96]",
-        "hover:text-[#050505]/85 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.12),0_3px_12px_rgba(5,5,5,0.08)]",
-        sizeClass,
-        toneClass,
+        hoverClasses[tone],
+        sizeClasses[size],
+        toneClasses[tone],
       )}
       type="button"
       aria-pressed={pressed}
@@ -56,19 +93,20 @@ export function VoiceMuteButton({
       label={muted ? "Unmute microphone" : "Mute microphone"}
       onClick={onClick}
       pressed={muted}
-      tone={muted ? "dark" : "default"}
+      size="xl"
+      tone="voice"
     >
-      <span className="relative grid size-5 place-items-center">
+      <span className="relative grid size-6 place-items-center">
         <Mic
           className={cx(
-            "absolute size-5 transition-[opacity,filter,scale] duration-200",
+            "absolute size-6 transition-[opacity,filter,scale] duration-200",
             muted ? "scale-[0.25] opacity-0 blur-xs" : "scale-100 opacity-100 blur-0",
           )}
           aria-hidden
         />
         <MicOff
           className={cx(
-            "absolute size-5 transition-[opacity,filter,scale] duration-200",
+            "absolute size-6 transition-[opacity,filter,scale] duration-200",
             muted ? "scale-100 opacity-100 blur-0" : "scale-[0.25] opacity-0 blur-xs",
           )}
           aria-hidden
@@ -97,12 +135,22 @@ export function VoiceActiveControls({
         label={messagesOpen ? "Hide messages" : "Show messages"}
         onClick={onToggleMessages}
         pressed={messagesOpen}
-        tone={messagesOpen ? "dark" : "default"}
+        size="md"
+        tone="soft"
       >
-        <MessageCircle className="size-5" aria-hidden />
+        {messagesOpen ? (
+          <MessageSquareText className="size-5" aria-hidden />
+        ) : (
+          <MessageSquareOff className="size-5" aria-hidden />
+        )}
       </VoiceIconButton>
       <VoiceMuteButton muted={muted} onClick={onToggleMute} />
-      <VoiceIconButton label="End conversation" onClick={onStop}>
+      <VoiceIconButton
+        label="End conversation"
+        size="md"
+        tone="dark"
+        onClick={onStop}
+      >
         <X className="size-5" aria-hidden />
       </VoiceIconButton>
     </div>
