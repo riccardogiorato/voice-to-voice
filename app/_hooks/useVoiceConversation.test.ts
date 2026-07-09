@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   appendSpokenWordText,
+  buildSocketCloseMessage,
   buildReceivedWordText,
   applyTranscriptFinalToTurns,
   buildSpokenTextAtTime,
@@ -16,6 +17,22 @@ import {
   selectCompletedAssistantText,
   shouldKeepSpeechOpen,
 } from "./useVoiceConversation";
+
+test("includes websocket close details in the reconnect message", () => {
+  expect(
+    buildSocketCloseMessage({ code: 1006, reason: "", wasClean: false }),
+  ).toBe("Session ended (1006: abnormal close). Tap the mic to reconnect.");
+
+  expect(
+    buildSocketCloseMessage({
+      code: 1011,
+      reason: "client message handler failed",
+      wasClean: false,
+    }),
+  ).toBe(
+    "Session ended (1011: client message handler failed). Tap the mic to reconnect.",
+  );
+});
 
 test("keeps the visible base transcript when a resumed delta has no displayable text", () => {
   expect(

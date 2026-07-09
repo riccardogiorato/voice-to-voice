@@ -26,6 +26,8 @@ import type { ChatMessage, ClientEvent } from "./voice-utils";
 const TTS_DONE_AFTER_COMMIT_MS = 8_000;
 const TTS_DONE_AFTER_AUDIO_IDLE_MS = 4_000;
 const STT_COMMIT_AWAIT_TIMEOUT_MS = 2_000;
+const MAX_CLOSE_REASON_LENGTH = 120;
+let nextSessionId = 1;
 
 export class VoiceSession {
   private stt?: WebSocket;
@@ -63,17 +65,25 @@ export class VoiceSession {
   private lastRawTranscript = "";
   private lastRepairedTranscript = "";
   private ttsDoneWatchdog?: NodeJS.Timeout;
+  private readonly sessionId = nextSessionId++;
 
   constructor(private client: WebSocket) {}
 
   start() {
-    this.client.on("message", (data) => this.handleClientMessage(data));
-    this.client.on("close", () => this.close());
-    this.client.on("error", () => this.close());
+    this.log("client.open");
+    this.client.on("message", (data) => this.handleClientMessageSafely(data));
+    this.client.on("close", (code, reason) => {
+      this.log("client.close", { code, reason: reason.toString() });
+      this.close("client closed");
+    });
+    this.client.on("error", (error) => {
+      this.logError("client.error", error);
+      this.close("client socket error", 1011);
+    });
 
     if (!process.env.TOGETHER_API_KEY) {
       this.send("error", { message: "Missing TOGETHER_API_KEY on the server." });
-      this.client.close();
+      this.client.close(1011, "missing server API key");
       return;
     }
 
@@ -89,7 +99,7 @@ export class VoiceSession {
         message: "Call time limit reached. Start a new call when you're ready.",
       });
       this.send("state", { state: "idle" });
-      this.close();
+      this.close("call time limit reached", 1000);
     }, 280_000);
 
     this.connectStt();
@@ -110,10 +120,16 @@ export class VoiceSession {
       headers: { Authorization: `Bearer ${process.env.TOGETHER_API_KEY}` },
     });
 
-    this.stt.on("open", () => this.send("state", { state: "listening" }));
-    this.stt.on("message", (data) => this.handleSttMessage(data));
-    this.stt.on("error", () => {});
-    this.stt.on("close", () => {
+    this.stt.on("open", () => {
+      this.log("stt.open", { model });
+      this.send("state", { state: "listening" });
+    });
+    this.stt.on("message", (data) => this.handleSttMessageSafely(data));
+    this.stt.on("error", (error) => {
+      this.logError("stt.error", error, { model });
+    });
+    this.stt.on("close", (code, reason) => {
+      this.log("stt.close", { code, reason: reason.toString(), model });
       if (this.stopped) return;
       if (this.sttFallbackPending) return;
       if (this.fallbackStt("Speech service disconnected.")) return;
@@ -143,9 +159,23 @@ export class VoiceSession {
       headers: { Authorization: `Bearer ${process.env.TOGETHER_API_KEY}` },
     });
 
-    this.tts.on("message", (data) => this.handleTtsMessage(data));
-    this.tts.on("error", () => {});
-    this.tts.on("close", () => {
+    this.tts.on("open", () => {
+      this.log("tts.open", { model: config.model, voice: config.voice });
+    });
+    this.tts.on("message", (data) => this.handleTtsMessageSafely(data));
+    this.tts.on("error", (error) => {
+      this.logError("tts.error", error, {
+        model: config.model,
+        voice: config.voice,
+      });
+    });
+    this.tts.on("close", (code, reason) => {
+      this.log("tts.close", {
+        code,
+        reason: reason.toString(),
+        model: config.model,
+        voice: config.voice,
+      });
       if (this.stopped) return;
       this.ttsReady = false;
       if (this.ttsFallbackPending) return;
@@ -162,6 +192,30 @@ export class VoiceSession {
         if (!this.stopped) this.connectTts();
       }, 500);
     });
+  }
+
+  private handleClientMessageSafely(data: WebSocket.RawData) {
+    try {
+      this.handleClientMessage(data);
+    } catch (error) {
+      this.failSession("client message handler failed", error);
+    }
+  }
+
+  private handleSttMessageSafely(data: WebSocket.RawData) {
+    try {
+      this.handleSttMessage(data);
+    } catch (error) {
+      this.failSession("STT message handler failed", error);
+    }
+  }
+
+  private handleTtsMessageSafely(data: WebSocket.RawData) {
+    try {
+      this.handleTtsMessage(data);
+    } catch (error) {
+      this.failSession("TTS message handler failed", error);
+    }
   }
 
   private handleClientMessage(data: WebSocket.RawData) {
@@ -195,7 +249,7 @@ export class VoiceSession {
     }
 
     if (event.type === "conversation.stop") {
-      this.close();
+      this.close("client requested stop", 1000);
       return;
     }
 
@@ -765,6 +819,38 @@ export class VoiceSession {
     this.client.send(JSON.stringify({ type, ...payload }));
   }
 
+  private failSession(message: string, error: unknown) {
+    this.logError(message, error);
+    this.send("error", {
+      message: `${message}. Reconnect and check server logs for session ${this.sessionId}.`,
+    });
+    this.close(message, 1011);
+  }
+
+  private log(event: string, details: Record<string, unknown> = {}) {
+    console.info("[voice-session]", {
+      sessionId: this.sessionId,
+      event,
+      ...details,
+    });
+  }
+
+  private logError(
+    event: string,
+    error: unknown,
+    details: Record<string, unknown> = {},
+  ) {
+    console.error("[voice-session]", {
+      sessionId: this.sessionId,
+      event,
+      ...details,
+      error:
+        error instanceof Error
+          ? { name: error.name, message: error.message, stack: error.stack }
+          : error,
+    });
+  }
+
   private isDuplicateTranscript(transcript: string) {
     const normalized = normalizeTranscript(transcript);
     const now = Date.now();
@@ -777,8 +863,9 @@ export class VoiceSession {
     return duplicate;
   }
 
-  private close() {
+  private close(reason = "session closed", code = 1000) {
     if (this.stopped) return;
+    this.log("session.close", { code, reason });
     this.stopped = true;
     clearInterval(this.keepaliveTimer);
     clearTimeout(this.expiryTimer);
@@ -790,6 +877,12 @@ export class VoiceSession {
     this.chatAbort?.abort();
     this.stt?.close();
     this.tts?.close();
-    if (this.client.readyState === WebSocket.OPEN) this.client.close();
+    if (this.client.readyState === WebSocket.OPEN) {
+      this.client.close(code, formatCloseReason(reason));
+    }
   }
+}
+
+function formatCloseReason(reason: string) {
+  return reason.slice(0, MAX_CLOSE_REASON_LENGTH);
 }

@@ -118,9 +118,21 @@ test("recovers to listening when TTS never sends audio done", async () => {
   expect(client.sent).toContainEqual({ type: "state", state: "listening" });
 });
 
+test("closes the client socket with diagnostic code and reason", () => {
+  const client = new FakeClientSocket();
+  const session = new VoiceSession(client as any);
+
+  (session as any).close("client message handler failed", 1011);
+
+  expect(client.closeCode).toBe(1011);
+  expect(client.closeReason).toBe("client message handler failed");
+});
+
 class FakeClientSocket {
   readyState = 1;
   sent: unknown[] = [];
+  closeCode?: number;
+  closeReason?: string;
 
   on() {}
 
@@ -128,7 +140,9 @@ class FakeClientSocket {
     this.sent.push(JSON.parse(payload));
   }
 
-  close() {
+  close(code?: number, reason?: string) {
+    this.closeCode = code;
+    this.closeReason = reason;
     this.readyState = 3;
   }
 }

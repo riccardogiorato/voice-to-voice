@@ -287,18 +287,19 @@ export function useVoiceConversation() {
         handleServerEvent(JSON.parse(message.data) as ServerEvent);
       };
 
-      socket.onerror = () => {
-        appendDebug("system", "socket.error");
+      socket.onerror = (event) => {
+        appendDebug("system", "socket.error", describeSocketError(event));
         setError("Voice socket failed. Try a deployed Vercel URL if local dev cannot upgrade WebSockets.");
         updatePhase("idle");
       };
 
-      socket.onclose = () => {
-        appendDebug("system", "socket.close");
+      socket.onclose = (event) => {
+        const closeDetails = describeSocketClose(event);
+        appendDebug("system", "socket.close", closeDetails);
         const wasActive = phaseRef.current !== "idle";
         tearDownAudio();
         updatePhase("idle");
-        if (wasActive) setError("Session ended. Tap the mic to reconnect.");
+        if (wasActive) setError(buildSocketCloseMessage(closeDetails));
       };
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not start the microphone.");
@@ -1444,6 +1445,50 @@ export function getTranscriptPartialFromDelta(event: {
     text: hasDisplayableText ? text : "",
     baseText: hasDisplayableBase ? baseText : undefined,
   };
+}
+
+type SocketCloseDetails = {
+  code: number;
+  reason: string;
+  wasClean: boolean;
+};
+
+export function buildSocketCloseMessage(details: SocketCloseDetails) {
+  const suffix =
+    details.reason.length > 0
+      ? ` (${details.code}: ${details.reason})`
+      : details.code === 1006
+        ? " (1006: abnormal close)"
+        : ` (${details.code})`;
+
+  return `Session ended${suffix}. Tap the mic to reconnect.`;
+}
+
+function describeSocketClose(event: CloseEvent): SocketCloseDetails {
+  return {
+    code: event.code,
+    reason: event.reason,
+    wasClean: event.wasClean,
+  };
+}
+
+function describeSocketError(event: Event) {
+  return {
+    type: event.type,
+    readyState: socketReadyStateName(
+      event.currentTarget instanceof WebSocket
+        ? event.currentTarget.readyState
+        : undefined,
+    ),
+  };
+}
+
+function socketReadyStateName(readyState: number | undefined) {
+  if (readyState === WebSocket.CONNECTING) return "CONNECTING";
+  if (readyState === WebSocket.OPEN) return "OPEN";
+  if (readyState === WebSocket.CLOSING) return "CLOSING";
+  if (readyState === WebSocket.CLOSED) return "CLOSED";
+  return readyState;
 }
 
 function sanitizeDebugPayload(payload: unknown): unknown {
