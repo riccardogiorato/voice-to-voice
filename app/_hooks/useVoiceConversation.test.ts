@@ -6,6 +6,7 @@ import {
   buildSpokenTextAtTime,
   buildTranscriptItems,
   detectBargeInSpeech,
+  detectBufferedSpeech,
   detectOpenSpeech,
   getPhaseAfterLocalSpeechStart,
   getTranscriptPartialFromDelta,
@@ -102,13 +103,31 @@ test("detects barge-in using TEN VAD only", () => {
     detectBargeInSpeech({ vadSpeech: true, vadProbability: 0.76 }),
   ).toBe(true);
   expect(
-    detectBargeInSpeech({ vadSpeech: false, vadProbability: 0.9 }),
+    detectBargeInSpeech({ vadSpeech: false, vadProbability: 0.76 }),
   ).toBe(true);
   expect(
     detectBargeInSpeech({ vadSpeech: null, vadProbability: null }),
   ).toBe(false);
   expect(
     detectBargeInSpeech({ vadSpeech: true, vadProbability: 0.7 }),
+  ).toBe(false);
+});
+
+test("keeps capturing a barge-in utterance after playback is cancelled", () => {
+  expect(
+    detectBufferedSpeech({
+      hasSpeech: false,
+      hasBargeInSpeech: true,
+      bargeInCaptureActive: true,
+    }),
+  ).toBe(true);
+
+  expect(
+    detectBufferedSpeech({
+      hasSpeech: false,
+      hasBargeInSpeech: true,
+      bargeInCaptureActive: false,
+    }),
   ).toBe(false);
 });
 
