@@ -108,6 +108,8 @@ export function useVoiceConversation() {
   const [error, setError] = useState("");
   const [muted, setMuted] = useState(false);
   const [micActivity, setMicActivity] = useState(0);
+  const [micLevel, setMicLevel] = useState(0);
+  const [userSpeaking, setUserSpeaking] = useState(false);
   const [debugCopied, setDebugCopied] = useState(false);
   const [debugVersion, setDebugVersion] = useState(0);
 
@@ -143,6 +145,8 @@ export function useVoiceConversation() {
   const mutedRef = useRef(false);
   const micActivityRef = useRef(0);
   const lastMicActivityPaintRef = useRef(0);
+  const micLevelRef = useRef(0);
+  const lastMicLevelPaintRef = useRef(0);
   const speechOpenedAtRef = useRef(Number.NEGATIVE_INFINITY);
   const tenVadRef = useRef<BrowserTenVad | null>(null);
   const tenVadPromiseRef = useRef<Promise<BrowserTenVad | null> | null>(null);
@@ -160,6 +164,7 @@ export function useVoiceConversation() {
   function resetConversation() {
     clearPlayback();
     resetAssistantSpeechTracking();
+    resetMicGate();
     setTurns([]);
     setPartial(null);
     setAssistantDraft("");
@@ -175,6 +180,8 @@ export function useVoiceConversation() {
       copiedAt: new Date().toISOString(),
       phase: phaseRef.current,
       muted: mutedRef.current,
+      userSpeaking,
+      micLevel,
       turns,
       partial,
       assistantDraft,
@@ -230,6 +237,7 @@ export function useVoiceConversation() {
     setAssistantDraft("");
     mutedRef.current = false;
     setMuted(false);
+    setUserSpeaking(false);
     updatePhase("connecting");
 
     try {
@@ -421,6 +429,8 @@ export function useVoiceConversation() {
     setPartial(null);
     resetAssistantSpeechTracking();
     setMicActivity(0);
+    setMicLevel(0);
+    setUserSpeaking(false);
   }
 
   useEffect(() => {
@@ -449,7 +459,11 @@ export function useVoiceConversation() {
     audioContextRef.current = null;
     micActivityRef.current = 0;
     lastMicActivityPaintRef.current = 0;
+    micLevelRef.current = 0;
+    lastMicLevelPaintRef.current = 0;
     setMicActivity(0);
+    setMicLevel(0);
+    setUserSpeaking(false);
     nextPlayTimeRef.current = 0;
     stopThinkingSound();
     micBufferRef.current = [];
@@ -500,6 +514,7 @@ export function useVoiceConversation() {
 
     const now = performance.now();
     const level = rms(input);
+    updateMicLevel(normalizeRange(level, 0.002, 0.085));
     const vad = tenVadRef.current;
     const vadDecision = vad?.process(input, sampleRate) ?? null;
     const vadSpeech = vadDecision?.isSpeech ?? null;
@@ -585,6 +600,7 @@ export function useVoiceConversation() {
         preRollRef.current = [];
         preRollSamplesRef.current = 0;
         speechOpenedAtRef.current = now;
+        setUserSpeaking(true);
       }
       lastSpeechAtRef.current = now;
       speechOpenRef.current = true;
@@ -622,6 +638,7 @@ export function useVoiceConversation() {
           sendClientEvent({ type: "audio.commit" }, socket);
         }
         speechOpenRef.current = false;
+        setUserSpeaking(false);
       }
       micBufferRef.current = [];
       micBufferSamplesRef.current = 0;
@@ -643,11 +660,13 @@ export function useVoiceConversation() {
     micBufferSamplesRef.current = 0;
     lastSpeechAtRef.current = Number.NEGATIVE_INFINITY;
     speechOpenRef.current = false;
+    setUserSpeaking(false);
     bargeInCaptureUntilRef.current = Number.NEGATIVE_INFINITY;
     preRollRef.current = [];
     preRollSamplesRef.current = 0;
     speechOpenedAtRef.current = Number.NEGATIVE_INFINITY;
     updateMicActivity(0, true);
+    updateMicLevel(0, true);
   }
 
   function flushSpeechAudio(socket: WebSocket, sampleRate: number) {
@@ -1076,6 +1095,19 @@ export function useVoiceConversation() {
     setMicActivity(smoothed);
   }
 
+  function updateMicLevel(next: number, immediate = false) {
+    const smoothed = immediate
+      ? next
+      : micLevelRef.current * 0.68 + clamp01(next) * 0.32;
+    micLevelRef.current = smoothed;
+
+    const now = performance.now();
+    if (!immediate && now - lastMicLevelPaintRef.current < 70) return;
+
+    lastMicLevelPaintRef.current = now;
+    setMicLevel(smoothed);
+  }
+
   const transcriptItems = useMemo<TranscriptItem[]>(() => {
     return buildTranscriptItems({ turns, partial, assistantDraft });
   }, [assistantDraft, partial, turns]);
@@ -1090,6 +1122,7 @@ export function useVoiceConversation() {
     error,
     isActive,
     micActivity,
+    micLevel,
     muted,
     phase,
     resetConversation,
@@ -1098,6 +1131,7 @@ export function useVoiceConversation() {
     toggleMute,
     transcriptItems,
     turns,
+    userSpeaking,
     copyDebugLog,
     debugCopied,
     debugEntries: debugLogRef.current,

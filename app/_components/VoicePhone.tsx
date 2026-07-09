@@ -37,7 +37,7 @@ const phaseCopy: Record<VoiceConversation["phase"], { label: string; detail: str
   },
   speaking: {
     label: "Speaking",
-    detail: "Mic paused",
+    detail: "Replying",
   },
 };
 
@@ -47,9 +47,13 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
     voice.muted && voice.isActive
       ? { label: "Muted", detail: "Tap the mic to resume" }
       : phaseCopy[voice.phase];
-  const waveformVisible = voice.phase === "listening" && !voice.muted;
+  const waveformVisible = voice.userSpeaking && !voice.muted;
+  const micMeterVisible = voice.isActive && !voice.muted;
   const orbStyle = {
     "--voice-activity": waveformVisible ? voice.micActivity.toFixed(3) : "0",
+  } as CSSProperties;
+  const micMeterStyle = {
+    "--mic-level": micMeterVisible ? voice.micLevel.toFixed(3) : "0",
   } as CSSProperties;
 
   return (
@@ -169,6 +173,16 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                     />
                   ),
                 )}
+              </div>
+
+              <div
+                className={`voice-mic-meter ${
+                  micMeterVisible ? "voice-mic-meter-active" : ""
+                }`}
+                style={micMeterStyle}
+                aria-hidden
+              >
+                <span />
               </div>
 
               <div className="rounded-full bg-white/38 px-4 py-2 text-center shadow-[0_0_0_1px_rgba(255,255,255,0.55),0_10px_28px_rgba(90,43,103,0.08)] backdrop-blur-xl">
