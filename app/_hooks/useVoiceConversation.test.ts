@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  appendSpokenWordText,
   applyTranscriptFinalToTurns,
   buildTranscriptItems,
   detectBargeInSpeech,
@@ -93,4 +94,10 @@ test("detects user barge-in over assistant playback without requiring a shout", 
   expect(detectBargeInSpeech({ level: 0.026, vadProbability: 0.76 })).toBe(true);
   expect(detectBargeInSpeech({ level: 0.039, vadProbability: null })).toBe(true);
   expect(detectBargeInSpeech({ level: 0.012, vadProbability: 0.7 })).toBe(false);
+});
+
+test("appends spoken words without fabricating unspoken text", () => {
+  expect(appendSpokenWordText("", "Once")).toBe("Once");
+  expect(appendSpokenWordText("Once upon", "a")).toBe("Once upon a");
+  expect(appendSpokenWordText("Once upon", " ")).toBe("Once upon");
 });

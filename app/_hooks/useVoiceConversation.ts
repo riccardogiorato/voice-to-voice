@@ -42,6 +42,12 @@ export type PartialTranscript = {
   baseText?: string;
 };
 
+type AssistantWordTiming = {
+  word: string;
+  startSeconds: number;
+  endSeconds: number;
+};
+
 type ServerEvent =
   | { type: "state"; state: Phase }
   | { type: "transcript.delta"; text: string; baseText?: string; merged?: boolean }
@@ -49,7 +55,14 @@ type ServerEvent =
   | { type: "transcript.updated"; text: string }
   | { type: "transcript.ignored"; text?: string }
   | { type: "assistant.delta"; text: string }
-  | { type: "audio.delta"; audio: string; sampleRate: number }
+  | {
+      type: "assistant.words";
+      itemId: string;
+      words: string[];
+      startSeconds: number[];
+      endSeconds: number[];
+    }
+  | { type: "audio.delta"; audio: string; sampleRate: number; itemId?: string }
   | { type: "audio.done" }
   | { type: "audio.clear" }
   | { type: "error"; message: string };
@@ -103,6 +116,12 @@ export function useVoiceConversation() {
   const silentGainRef = useRef<GainNode | null>(null);
   const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const thinkingSoundRef = useRef<ThinkingSoundHandle | null>(null);
+  const assistantDraftRef = useRef("");
+  const assistantGeneratedTextRef = useRef("");
+  const ttsAudioStartsRef = useRef(new Map<string, number>());
+  const ttsWordTimingsRef = useRef(new Map<string, AssistantWordTiming[]>());
+  const scheduledWordKeysRef = useRef(new Set<string>());
+  const wordTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const nextPlayTimeRef = useRef(0);
   const phaseRef = useRef<Phase>("idle");
   const micBufferRef = useRef<Float32Array[]>([]);
@@ -129,11 +148,13 @@ export function useVoiceConversation() {
   const pendingPlaybackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const speakingWatchdogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const assistantFinalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isActive = phase !== "idle";
 
   function resetConversation() {
     clearPlayback();
+    resetAssistantSpeechTracking();
     setTurns([]);
     setPartial(null);
     setAssistantDraft("");
@@ -264,6 +285,9 @@ export function useVoiceConversation() {
     appendDebug("server", event.type, event);
 
     if (event.type === "state") {
+      if (event.state === "thinking") {
+        resetAssistantSpeechTracking();
+      }
       deferPhaseUntilPlayback(event.state);
       return;
     }
@@ -300,31 +324,30 @@ export function useVoiceConversation() {
 
     if (event.type === "assistant.delta") {
       scheduleSpeakingWatchdog();
-      setAssistantDraft((current) => current + event.text);
+      assistantGeneratedTextRef.current += event.text;
+      return;
+    }
+
+    if (event.type === "assistant.words") {
+      storeAssistantWordTimings(event);
       return;
     }
 
     if (event.type === "audio.delta") {
       scheduleSpeakingWatchdog();
-      playPcm16(event.audio, event.sampleRate);
+      playPcm16(event.audio, event.sampleRate, event.itemId);
       return;
     }
 
     if (event.type === "audio.done") {
-      setAssistantDraft((draft) => {
-        const text = draft.trim();
-        if (text) {
-          setTurns((current) => appendAssistantTurn(current, text));
-        }
-        return "";
-      });
+      scheduleAssistantFinalizeAfterPlayback();
       deferPhaseUntilPlayback("listening");
       return;
     }
 
     if (event.type === "audio.clear") {
+      commitInterruptedAssistantDraft();
       clearPlayback();
-      setAssistantDraft("");
       return;
     }
 
@@ -386,7 +409,7 @@ export function useVoiceConversation() {
     tearDownAudio();
     updatePhase("idle");
     setPartial(null);
-    setAssistantDraft("");
+    resetAssistantSpeechTracking();
     setMicActivity(0);
   }
 
@@ -494,8 +517,8 @@ export function useVoiceConversation() {
 
       if (!bargeInSentRef.current) {
         sendClientEvent({ type: "response.cancel" }, socket);
+        commitInterruptedAssistantDraft();
         clearPlayback();
-        setAssistantDraft("");
         updatePhase("listening");
         bargeInSentRef.current = true;
       }
@@ -658,6 +681,115 @@ export function useVoiceConversation() {
     }
   }
 
+  function setAssistantDraftText(text: string) {
+    assistantDraftRef.current = text;
+    setAssistantDraft(text);
+  }
+
+  function storeAssistantWordTimings(event: Extract<ServerEvent, { type: "assistant.words" }>) {
+    const timings = event.words
+      .map((word, index) => ({
+        word,
+        startSeconds: Number(event.startSeconds[index]),
+        endSeconds: Number(event.endSeconds[index]),
+      }))
+      .filter(
+        (timing) =>
+          timing.word.trim().length > 0 &&
+          Number.isFinite(timing.startSeconds) &&
+          Number.isFinite(timing.endSeconds),
+      );
+
+    if (timings.length === 0 || !event.itemId) return;
+
+    if (
+      ttsWordTimingsRef.current.size === 0 &&
+      assistantDraftRef.current.trim() === assistantGeneratedTextRef.current.trim()
+    ) {
+      setAssistantDraftText("");
+    }
+
+    ttsWordTimingsRef.current.set(event.itemId, timings);
+    scheduleAssistantWordsForItem(event.itemId);
+  }
+
+  function scheduleAssistantWordsForItem(itemId: string) {
+    const audioContext = audioContextRef.current;
+    const itemStartAt = ttsAudioStartsRef.current.get(itemId);
+    const timings = ttsWordTimingsRef.current.get(itemId);
+    if (!audioContext || itemStartAt === undefined || !timings) return;
+
+    timings.forEach((timing, index) => {
+      const key = `${itemId}:${index}`;
+      if (scheduledWordKeysRef.current.has(key)) return;
+      scheduledWordKeysRef.current.add(key);
+
+      const delayMs = Math.max(
+        0,
+        (itemStartAt + timing.endSeconds - audioContext.currentTime) * 1000,
+      );
+      const timer = setTimeout(() => {
+        setAssistantDraftText(
+          appendSpokenWordText(assistantDraftRef.current, timing.word),
+        );
+      }, delayMs);
+      wordTimersRef.current.push(timer);
+    });
+  }
+
+  function scheduleAssistantFinalizeAfterPlayback() {
+    clearAssistantFinalizeTimer();
+    const audioContext = audioContextRef.current;
+    const delayMs = audioContext
+      ? Math.max(0, nextPlayTimeRef.current - audioContext.currentTime) * 1000 + 80
+      : 0;
+
+    assistantFinalizeTimerRef.current = setTimeout(() => {
+      assistantFinalizeTimerRef.current = null;
+      commitCompletedAssistantDraft();
+    }, delayMs);
+  }
+
+  function commitCompletedAssistantDraft() {
+    const text =
+      assistantDraftRef.current.trim() || assistantGeneratedTextRef.current.trim();
+    commitAssistantText(text);
+    resetAssistantSpeechTracking();
+  }
+
+  function commitInterruptedAssistantDraft() {
+    const text = assistantDraftRef.current.trim();
+    commitAssistantText(text);
+    resetAssistantSpeechTracking();
+  }
+
+  function commitAssistantText(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setTurns((current) => appendAssistantTurn(current, trimmed));
+  }
+
+  function resetAssistantSpeechTracking() {
+    clearAssistantFinalizeTimer();
+    clearAssistantWordTimers();
+    assistantGeneratedTextRef.current = "";
+    ttsAudioStartsRef.current.clear();
+    ttsWordTimingsRef.current.clear();
+    scheduledWordKeysRef.current.clear();
+    setAssistantDraftText("");
+  }
+
+  function clearAssistantFinalizeTimer() {
+    if (!assistantFinalizeTimerRef.current) return;
+    clearTimeout(assistantFinalizeTimerRef.current);
+    assistantFinalizeTimerRef.current = null;
+  }
+
+  function clearAssistantWordTimers() {
+    wordTimersRef.current.forEach((timer) => clearTimeout(timer));
+    wordTimersRef.current = [];
+  }
+
   function startThinkingSound() {
     const audioContext = audioContextRef.current;
     if (!audioContext || thinkingSoundRef.current) return;
@@ -672,7 +804,7 @@ export function useVoiceConversation() {
     sound.stop();
   }
 
-  function playPcm16(base64: string, sampleRate: number) {
+  function playPcm16(base64: string, sampleRate: number, itemId?: string) {
     const audioContext = audioContextRef.current;
     if (!audioContext) return;
 
@@ -686,6 +818,10 @@ export function useVoiceConversation() {
 
     const startAt = Math.max(audioContext.currentTime + 0.02, nextPlayTimeRef.current);
     source.start(startAt);
+    if (itemId && !ttsAudioStartsRef.current.has(itemId)) {
+      ttsAudioStartsRef.current.set(itemId, startAt);
+      scheduleAssistantWordsForItem(itemId);
+    }
     nextPlayTimeRef.current = startAt + buffer.duration;
     assistantAudioBlockUntilRef.current = Math.max(
       assistantAudioBlockUntilRef.current,
@@ -890,6 +1026,14 @@ export function detectBargeInSpeech({
     (vadProbability >= BARGE_IN_STRONG_VAD_THRESHOLD &&
       level >= SPEECH_RMS_THRESHOLD * 0.5)
   );
+}
+
+export function appendSpokenWordText(current: string, word: string) {
+  const trimmedCurrent = current.trim();
+  const trimmedWord = word.trim();
+  if (!trimmedWord) return trimmedCurrent;
+  if (!trimmedCurrent) return trimmedWord;
+  return `${trimmedCurrent} ${trimmedWord}`;
 }
 
 export function appendAssistantTurn(turns: Turn[], text: string) {

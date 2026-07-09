@@ -135,6 +135,7 @@ export class VoiceSession {
     url.searchParams.set("sample_rate", "24000");
     url.searchParams.set("segment", "immediate");
     url.searchParams.set("max_partial_length", "80");
+    url.searchParams.set("alignment", "word");
 
     this.tts = new WebSocket(url.toString(), {
       headers: { Authorization: `Bearer ${process.env.TOGETHER_API_KEY}` },
@@ -321,8 +322,24 @@ export class VoiceSession {
 
     if (message.type === "conversation.item.audio_output.delta") {
       this.answerAudioStarted = true;
-      this.send("audio.delta", { audio: message.delta, sampleRate: 24000 });
+      this.send("audio.delta", {
+        audio: message.delta,
+        sampleRate: 24000,
+        itemId: String(message.item_id ?? ""),
+      });
       this.scheduleTtsDoneWatchdog(TTS_DONE_AFTER_AUDIO_IDLE_MS);
+      return;
+    }
+
+    if (message.type === "conversation.item.word_timestamps") {
+      this.send("assistant.words", {
+        itemId: String(message.item_id ?? ""),
+        words: Array.isArray(message.words) ? message.words : [],
+        startSeconds: Array.isArray(message.start_seconds)
+          ? message.start_seconds
+          : [],
+        endSeconds: Array.isArray(message.end_seconds) ? message.end_seconds : [],
+      });
       return;
     }
 
