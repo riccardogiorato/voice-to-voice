@@ -25,6 +25,7 @@ import type { ChatMessage, ClientEvent } from "./voice-utils";
 
 const TTS_DONE_AFTER_COMMIT_MS = 8_000;
 const TTS_DONE_AFTER_AUDIO_IDLE_MS = 4_000;
+const STT_COMMIT_AWAIT_TIMEOUT_MS = 2_000;
 
 export class VoiceSession {
   private stt?: WebSocket;
@@ -54,7 +55,8 @@ export class VoiceSession {
   private pendingTranscriptId = 0;
   private userSpeechActive = false;
   private speechIdleTimer?: NodeJS.Timeout;
-  private awaitingCommittedTranscript = false;
+  private pendingTranscriptCompletions = 0;
+  private transcriptAwaitTimer?: NodeJS.Timeout;
   private deferredAnswer?: { rawTranscript: string; merged: boolean };
   private answerAudioStarted = false;
   private continuationPending = false;
@@ -181,10 +183,11 @@ export class VoiceSession {
       this.lastUserTranscript = "";
       this.lastUserFinalAt = 0;
       this.userSpeechActive = false;
-      this.awaitingCommittedTranscript = false;
+      this.pendingTranscriptCompletions = 0;
       this.continuationPending = false;
       this.deferredAnswer = undefined;
       clearTimeout(this.speechIdleTimer);
+      clearTimeout(this.transcriptAwaitTimer);
       this.lastRawTranscript = "";
       this.lastRepairedTranscript = "";
       this.send("state", { state: "listening" });
@@ -230,8 +233,9 @@ export class VoiceSession {
 
     if (event.type === "audio.commit") {
       this.userSpeechActive = false;
-      this.awaitingCommittedTranscript = true;
       clearTimeout(this.speechIdleTimer);
+      this.pendingTranscriptCompletions += 1;
+      this.refreshTranscriptAwaitTimer();
       this.commitAudio();
       return;
     }
@@ -259,14 +263,14 @@ export class VoiceSession {
     if (message.type === "conversation.item.input_audio_transcription.completed") {
       const transcript = cleanTranscript(String(message.transcript ?? ""));
       if (transcript.length === 0 || isGhostTranscript(transcript)) {
-        this.awaitingCommittedTranscript = false;
+        this.finishCommittedTranscript();
         this.continuationPending = false;
         this.send("transcript.ignored", { text: transcript });
         this.scheduleDeferredAnswerIfIdle();
         return;
       }
 
-      this.awaitingCommittedTranscript = false;
+      this.finishCommittedTranscript();
       if (this.isDuplicateTranscript(transcript)) {
         this.continuationPending = false;
         this.scheduleDeferredAnswerIfIdle();
@@ -277,16 +281,25 @@ export class VoiceSession {
       // Merging retracts the previous turn, so it is only safe while the
       // user hasn't heard any of the reply yet. continuationPending means
       // speech resumed inside the window (history already retracted then).
+      const deferredTranscript = this.deferredAnswer?.rawTranscript ?? "";
+      const shouldMergeDeferred =
+        deferredTranscript.length > 0 && !this.answerAudioStarted;
+      const mergeBase = shouldMergeDeferred
+        ? deferredTranscript
+        : this.lastUserTranscript;
       const shouldMerge =
-        this.lastUserTranscript.length > 0 &&
-        (this.continuationPending ||
+        mergeBase.length > 0 &&
+        (shouldMergeDeferred ||
+          this.continuationPending ||
           (!this.answerAudioStarted &&
             now - this.lastUserFinalAt < TRANSCRIPT_MERGE_WINDOW_MS));
       const finalTranscript = shouldMerge
-        ? mergeTranscriptText(this.lastUserTranscript, transcript)
+        ? mergeTranscriptText(mergeBase, transcript)
         : transcript;
 
-      if (shouldMerge && !this.continuationPending) this.retractLastTurnForMerge();
+      if (shouldMerge && !shouldMergeDeferred && !this.continuationPending) {
+        this.retractLastTurnForMerge();
+      }
       this.continuationPending = false;
 
       this.lastUserTranscript = finalTranscript;
@@ -296,7 +309,7 @@ export class VoiceSession {
     }
 
     if (message.type === "conversation.item.input_audio_transcription.failed") {
-      this.awaitingCommittedTranscript = false;
+      this.finishCommittedTranscript();
       this.scheduleDeferredAnswerIfIdle();
       this.send("error", {
         message: message.error?.message ?? "Transcription failed.",
@@ -500,7 +513,7 @@ export class VoiceSession {
 
   private scheduleDeferredAnswerIfIdle() {
     if (!this.deferredAnswer) return;
-    if (this.userSpeechActive || this.awaitingCommittedTranscript) return;
+    if (this.userSpeechActive || this.pendingTranscriptCompletions > 0) return;
 
     const { rawTranscript, merged } = this.deferredAnswer;
     clearTimeout(this.answerTimer);
@@ -660,10 +673,29 @@ export class VoiceSession {
 
   private cancelResponse() {
     this.cancelPendingAnswer(false);
-    this.awaitingCommittedTranscript = false;
+    this.pendingTranscriptCompletions = 0;
+    clearTimeout(this.transcriptAwaitTimer);
     this.userSpeechActive = false;
     clearTimeout(this.speechIdleTimer);
     this.cancelAssistantOutput();
+  }
+
+  private finishCommittedTranscript() {
+    this.pendingTranscriptCompletions = Math.max(
+      0,
+      this.pendingTranscriptCompletions - 1,
+    );
+    if (this.pendingTranscriptCompletions === 0) {
+      clearTimeout(this.transcriptAwaitTimer);
+    }
+  }
+
+  private refreshTranscriptAwaitTimer() {
+    clearTimeout(this.transcriptAwaitTimer);
+    this.transcriptAwaitTimer = setTimeout(() => {
+      this.pendingTranscriptCompletions = 0;
+      this.scheduleDeferredAnswerIfIdle();
+    }, STT_COMMIT_AWAIT_TIMEOUT_MS);
   }
 
   private pausePendingAnswer() {
@@ -752,6 +784,7 @@ export class VoiceSession {
     clearTimeout(this.expiryTimer);
     clearTimeout(this.answerTimer);
     clearTimeout(this.speechIdleTimer);
+    clearTimeout(this.transcriptAwaitTimer);
     this.clearTtsDoneWatchdog();
     this.repairAbort?.abort();
     this.chatAbort?.abort();

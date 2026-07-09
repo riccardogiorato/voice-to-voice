@@ -48,6 +48,52 @@ test("keeps a pending user utterance when speech resumes before reply grace expi
   ]);
 });
 
+test("waits for all split speech commits before answering", async () => {
+  process.env.TOGETHER_API_KEY = "test-key";
+  const client = new FakeClientSocket();
+  const session = new VoiceSession(client as any);
+  const scheduled: Array<{ rawTranscript: string; merged: boolean }> = [];
+
+  (session as any).startTurn = (
+    rawTranscript: string,
+    merged: boolean,
+    _transcriptId: number,
+  ) => {
+    scheduled.push({ rawTranscript, merged });
+  };
+
+  (session as any).handleClientMessage(rawMessage({ type: "speech.started" }));
+  (session as any).handleClientMessage(rawMessage({ type: "audio.commit" }));
+  (session as any).handleClientMessage(rawMessage({ type: "speech.started" }));
+  (session as any).handleClientMessage(rawMessage({ type: "audio.commit" }));
+  (session as any).handleSttMessage(
+    rawMessage({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "what were the World Cup matches",
+    }),
+  );
+
+  await delay(REPLY_GRACE_INCOMPLETE_MS + 50);
+
+  expect(scheduled).toEqual([]);
+
+  (session as any).handleSttMessage(
+    rawMessage({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "yesterday or last month",
+    }),
+  );
+
+  await delay(REPLY_GRACE_INCOMPLETE_MS + 50);
+
+  expect(scheduled).toEqual([
+    {
+      rawTranscript: "what were the World Cup matches yesterday or last month",
+      merged: true,
+    },
+  ]);
+});
+
 test("reports listening when user speech starts during a pending answer", () => {
   process.env.TOGETHER_API_KEY = "test-key";
   const client = new FakeClientSocket();

@@ -85,7 +85,7 @@ const BARGE_IN_VAD_THRESHOLD = 0.72;
 const BARGE_IN_HOLD_MS = 90;
 const ASSISTANT_AUDIO_TAIL_MS = 850;
 const SPEAKING_WATCHDOG_MS = 20_000;
-const VAD_SPEECH_HOLD_MS = 250;
+const VAD_SPEECH_HOLD_MS = 700;
 const MIC_ACTIVITY_RMS_FLOOR = 0.024;
 const MIN_SPEECH_MS = 380;
 const MIN_AUDIO_CHUNK_MS = 80;
@@ -573,8 +573,10 @@ export function useVoiceConversation() {
       );
     }
 
-    const holdMs = VAD_SPEECH_HOLD_MS;
-    const inSpeechTail = now - lastSpeechAtRef.current <= holdMs;
+    const inSpeechTail = shouldKeepSpeechOpen({
+      now,
+      lastSpeechAt: lastSpeechAtRef.current,
+    });
     if (!inSpeechTail) {
       const speechDuration = now - speechOpenedAtRef.current;
       if (speechOpenRef.current) {
@@ -1055,6 +1057,16 @@ export function detectOpenSpeech({
   vadSpeech: boolean | null;
 }) {
   return vadSpeech ?? false;
+}
+
+export function shouldKeepSpeechOpen({
+  now,
+  lastSpeechAt,
+}: {
+  now: number;
+  lastSpeechAt: number;
+}) {
+  return now - lastSpeechAt <= VAD_SPEECH_HOLD_MS;
 }
 
 export function appendSpokenWordText(current: string, word: string) {

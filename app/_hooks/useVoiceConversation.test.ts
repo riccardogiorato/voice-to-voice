@@ -9,6 +9,7 @@ import {
   getPhaseAfterLocalSpeechStart,
   getTranscriptPartialFromDelta,
   mergeAssistantWordTimings,
+  shouldKeepSpeechOpen,
 } from "./useVoiceConversation";
 
 test("keeps the visible base transcript when a resumed delta has no displayable text", () => {
@@ -115,6 +116,15 @@ test("opens speech using TEN VAD only", () => {
   expect(
     detectOpenSpeech({
       vadSpeech: true,
+    }),
+  ).toBe(true);
+});
+
+test("keeps speech open through a short hesitation", () => {
+  expect(
+    shouldKeepSpeechOpen({
+      now: 1_360,
+      lastSpeechAt: 1_000,
     }),
   ).toBe(true);
 });
