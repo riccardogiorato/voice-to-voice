@@ -98,9 +98,18 @@ test("local speech start exits thinking so the thinking sound stops immediately"
 });
 
 test("detects barge-in using TEN VAD only", () => {
-  expect(detectBargeInSpeech({ vadProbability: 0.76 })).toBe(true);
-  expect(detectBargeInSpeech({ vadProbability: null })).toBe(false);
-  expect(detectBargeInSpeech({ vadProbability: 0.7 })).toBe(false);
+  expect(
+    detectBargeInSpeech({ vadSpeech: true, vadProbability: 0.76 }),
+  ).toBe(true);
+  expect(
+    detectBargeInSpeech({ vadSpeech: false, vadProbability: 0.9 }),
+  ).toBe(true);
+  expect(
+    detectBargeInSpeech({ vadSpeech: null, vadProbability: null }),
+  ).toBe(false);
+  expect(
+    detectBargeInSpeech({ vadSpeech: true, vadProbability: 0.7 }),
+  ).toBe(false);
 });
 
 test("opens speech using TEN VAD only", () => {

@@ -82,10 +82,13 @@ type ClientEvent =
   | { type: "audio.input"; audio: string; sampleRate: number };
 
 const BARGE_IN_VAD_THRESHOLD = 0.72;
+const BARGE_IN_STRONG_VAD_THRESHOLD = 0.86;
 const BARGE_IN_HOLD_MS = 90;
 const ASSISTANT_AUDIO_TAIL_MS = 850;
 const SPEAKING_WATCHDOG_MS = 20_000;
 const VAD_SPEECH_HOLD_MS = 700;
+const MAX_SPEECH_SEGMENT_MS = 8_000;
+const VAD_DEBUG_INTERVAL_MS = 1_000;
 const MIC_ACTIVITY_RMS_FLOOR = 0.024;
 const MIN_SPEECH_MS = 380;
 const MIN_AUDIO_CHUNK_MS = 80;
@@ -93,8 +96,6 @@ const PRE_ROLL_MS = 320;
 // Server caps repair at 800ms; after this window the bubble solidifies and
 // its text never changes again.
 const TRANSCRIPT_SETTLE_MS = 1000;
-const VAD_OPEN_THRESHOLD = 0.76;
-const VAD_CLOSE_THRESHOLD = 0.46;
 const MAX_COMMITTED_TURNS = 24;
 const MAX_VISIBLE_TRANSCRIPT_ITEMS = 8;
 
@@ -146,6 +147,8 @@ export function useVoiceConversation() {
   const tenVadPromiseRef = useRef<Promise<BrowserTenVad | null> | null>(null);
   const debugLogRef = useRef<DebugEntry[]>([]);
   const lastDebugPaintRef = useRef(0);
+  const lastVadDebugAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const lastVadDebugRef = useRef<Record<string, unknown> | null>(null);
   const pendingPlaybackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const speakingWatchdogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -174,6 +177,11 @@ export function useVoiceConversation() {
       turns,
       partial,
       assistantDraft,
+      vad: {
+        loaded: Boolean(tenVadRef.current),
+        speechOpen: speechOpenRef.current,
+        last: lastVadDebugRef.current,
+      },
       entries: debugLogRef.current,
     };
 
@@ -494,16 +502,27 @@ export function useVoiceConversation() {
     const level = rms(input);
     const vad = tenVadRef.current;
     const vadDecision = vad?.process(input, sampleRate) ?? null;
-    const vadSpeech = vadDecision
-      ? vadDecision.probability >=
-        (speechOpenRef.current ? VAD_CLOSE_THRESHOLD : VAD_OPEN_THRESHOLD)
-      : null;
+    const vadSpeech = vadDecision?.isSpeech ?? null;
+    const hasSpeech = detectOpenSpeech({
+      vadSpeech,
+    });
+    const hasBargeInSpeech = detectBargeInSpeech({
+      vadSpeech,
+      vadProbability: vadDecision?.probability ?? null,
+    });
+
+    appendVadDebug({
+      now,
+      level,
+      vadProbability: vadDecision?.probability ?? null,
+      vadSpeech,
+      hasSpeech,
+      hasBargeInSpeech,
+      speechOpen: speechOpenRef.current,
+      sampleRate,
+    });
 
     if (isAssistantAudioBlockingMic(now) || phaseRef.current === "speaking") {
-      const hasBargeInSpeech = detectBargeInSpeech({
-        vadProbability: vadDecision?.probability ?? null,
-      });
-
       if (!hasBargeInSpeech) {
         resetMicGate();
         bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
@@ -531,9 +550,6 @@ export function useVoiceConversation() {
       }
     }
 
-    const hasSpeech = detectOpenSpeech({
-      vadSpeech,
-    });
     updateMicActivity(
       vadDecision
         ? normalizeRange(vadDecision.probability, 0.18, 0.92)
@@ -577,10 +593,17 @@ export function useVoiceConversation() {
       now,
       lastSpeechAt: lastSpeechAtRef.current,
     });
-    if (!inSpeechTail) {
-      const speechDuration = now - speechOpenedAtRef.current;
+    const speechDuration = now - speechOpenedAtRef.current;
+    const segmentTimedOut =
+      speechOpenRef.current && speechDuration >= MAX_SPEECH_SEGMENT_MS;
+    if (!inSpeechTail || segmentTimedOut) {
       if (speechOpenRef.current) {
         if (speechDuration >= MIN_SPEECH_MS) {
+          if (segmentTimedOut && hasSpeech) {
+            const copy = new Float32Array(input);
+            micBufferRef.current.push(copy);
+            micBufferSamplesRef.current += copy.length;
+          }
           flushSpeechAudio(socket, sampleRate);
           sendClientEvent({ type: "audio.commit" }, socket);
         }
@@ -636,6 +659,46 @@ export function useVoiceConversation() {
     }
   }
 
+  function appendVadDebug({
+    now,
+    level,
+    vadProbability,
+    vadSpeech,
+    hasSpeech,
+    hasBargeInSpeech,
+    speechOpen,
+    sampleRate,
+  }: {
+    now: number;
+    level: number;
+    vadProbability: number | null;
+    vadSpeech: boolean | null;
+    hasSpeech: boolean;
+    hasBargeInSpeech: boolean;
+    speechOpen: boolean;
+    sampleRate: number;
+  }) {
+    const speechDurationMs =
+      speechOpenedAtRef.current === Number.NEGATIVE_INFINITY
+        ? 0
+        : Math.max(0, Math.round(now - speechOpenedAtRef.current));
+    const payload = {
+      probability:
+        vadProbability === null ? null : Number(vadProbability.toFixed(3)),
+      isSpeech: vadSpeech,
+      hasSpeech,
+      hasBargeInSpeech,
+      speechOpen,
+      speechDurationMs,
+      level: Number(level.toFixed(5)),
+      sampleRate,
+    };
+    lastVadDebugRef.current = payload;
+    if (now - lastVadDebugAtRef.current < VAD_DEBUG_INTERVAL_MS) return;
+    lastVadDebugAtRef.current = now;
+    appendDebug("system", "vad.summary", payload);
+  }
+
   function appendDebug(
     direction: DebugEntry["direction"],
     type: string,
@@ -673,6 +736,8 @@ export function useVoiceConversation() {
   function clearDebugLog() {
     debugLogRef.current = [];
     lastDebugPaintRef.current = 0;
+    lastVadDebugAtRef.current = Number.NEGATIVE_INFINITY;
+    lastVadDebugRef.current = null;
     setDebugCopied(false);
     setDebugVersion((version) => version + 1);
   }
@@ -1067,11 +1132,17 @@ export function getPhaseAfterLocalSpeechStart(phase: Phase): Phase {
 }
 
 export function detectBargeInSpeech({
+  vadSpeech,
   vadProbability,
 }: {
+  vadSpeech: boolean | null;
   vadProbability: number | null;
 }) {
-  return vadProbability !== null && vadProbability >= BARGE_IN_VAD_THRESHOLD;
+  if (vadProbability === null) return false;
+  return (
+    (vadSpeech === true && vadProbability >= BARGE_IN_VAD_THRESHOLD) ||
+    vadProbability >= BARGE_IN_STRONG_VAD_THRESHOLD
+  );
 }
 
 export function detectOpenSpeech({
