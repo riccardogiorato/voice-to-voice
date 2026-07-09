@@ -64,8 +64,10 @@ type ClientEvent =
   | { type: "audio.input"; audio: string; sampleRate: number };
 
 const SPEECH_RMS_THRESHOLD = 0.024;
-const BARGE_IN_RMS_THRESHOLD = 0.06;
-const BARGE_IN_HOLD_MS = 140;
+const BARGE_IN_RMS_THRESHOLD = 0.038;
+const BARGE_IN_VAD_THRESHOLD = 0.72;
+const BARGE_IN_STRONG_VAD_THRESHOLD = 0.88;
+const BARGE_IN_HOLD_MS = 90;
 const ASSISTANT_AUDIO_TAIL_MS = 850;
 const SPEAKING_WATCHDOG_MS = 20_000;
 const VAD_SPEECH_HOLD_MS = 250;
@@ -467,9 +469,10 @@ export function useVoiceConversation() {
       : null;
 
     if (isAssistantAudioBlockingMic(now) || phaseRef.current === "speaking") {
-      const hasBargeInSpeech =
-        level >= BARGE_IN_RMS_THRESHOLD ||
-        ((vadDecision?.probability ?? 0) >= 0.88 && level >= SPEECH_RMS_THRESHOLD);
+      const hasBargeInSpeech = detectBargeInSpeech({
+        level,
+        vadProbability: vadDecision?.probability ?? null,
+      });
 
       if (!hasBargeInSpeech) {
         resetMicGate();
@@ -869,6 +872,24 @@ export function settleLastUserTurn(turns: Turn[]) {
 
 export function getPhaseAfterLocalSpeechStart(phase: Phase): Phase {
   return phase === "thinking" ? "listening" : phase;
+}
+
+export function detectBargeInSpeech({
+  level,
+  vadProbability,
+}: {
+  level: number;
+  vadProbability: number | null;
+}) {
+  if (level >= BARGE_IN_RMS_THRESHOLD) return true;
+  if (vadProbability === null) return false;
+
+  return (
+    (vadProbability >= BARGE_IN_VAD_THRESHOLD &&
+      level >= SPEECH_RMS_THRESHOLD * 0.75) ||
+    (vadProbability >= BARGE_IN_STRONG_VAD_THRESHOLD &&
+      level >= SPEECH_RMS_THRESHOLD * 0.5)
+  );
 }
 
 export function appendAssistantTurn(turns: Turn[], text: string) {

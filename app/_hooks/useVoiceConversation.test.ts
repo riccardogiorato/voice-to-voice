@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   applyTranscriptFinalToTurns,
   buildTranscriptItems,
+  detectBargeInSpeech,
   getPhaseAfterLocalSpeechStart,
   getTranscriptPartialFromDelta,
 } from "./useVoiceConversation";
@@ -86,4 +87,10 @@ test("local speech start exits thinking so the thinking sound stops immediately"
   expect(getPhaseAfterLocalSpeechStart("thinking")).toBe("listening");
   expect(getPhaseAfterLocalSpeechStart("listening")).toBe("listening");
   expect(getPhaseAfterLocalSpeechStart("speaking")).toBe("speaking");
+});
+
+test("detects user barge-in over assistant playback without requiring a shout", () => {
+  expect(detectBargeInSpeech({ level: 0.026, vadProbability: 0.76 })).toBe(true);
+  expect(detectBargeInSpeech({ level: 0.039, vadProbability: null })).toBe(true);
+  expect(detectBargeInSpeech({ level: 0.012, vadProbability: 0.7 })).toBe(false);
 });

@@ -188,25 +188,30 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                   className="conversation-scroll max-h-[240px] overflow-y-auto overscroll-contain"
                 >
                 <div className="flex min-h-[120px] flex-col justify-end gap-1.5 px-1 py-3">
-                  {voice.transcriptItems.map((turn, index) => (
+                  {voice.transcriptItems.map((turn, index) => {
+                    const pendingUser = turn.role === "user" && turn.settled === false;
+                    return (
                       <p
-                        className={`max-w-[86%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 shadow-[0_8px_22px_rgba(42,26,52,0.07)] transition-[opacity,filter,transform] duration-300 ease-out ${
-                          turn.role === "user"
+                        className={`max-w-[86%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 transition-[background-color,color,opacity,filter,transform,box-shadow] duration-300 ease-out ${
+                          pendingUser
+                            ? "self-end bg-[#d8d2df]/72 text-[#241a2d]/72 shadow-[0_0_0_1px_rgba(5,5,5,0.04),0_8px_22px_rgba(42,26,52,0.04)] backdrop-blur-xl"
+                            : turn.role === "user"
                             ? "self-end bg-[#050505]/88 text-white backdrop-blur-xl"
                             : "self-start bg-white/48 text-[#33253d] shadow-[0_0_0_1px_rgba(255,255,255,0.5),0_8px_22px_rgba(42,26,52,0.06)] backdrop-blur-xl"
                         } ${turn.live ? "opacity-100" : ""}`}
                         style={{
                           opacity: turn.live
                             ? 1
-                            : turn.role === "user" && turn.settled === false
-                              ? 0.72
+                            : pendingUser
+                              ? 0.86
                               : Math.max(0.6, 0.95 - (voice.transcriptItems.length - index - 1) * 0.1),
                         }}
                         key={`${turn.role}-${index}`}
                       >
                         {turn.text}
                       </p>
-                  ))}
+                    );
+                  })}
                 </div>
                 </div>
               </div>
