@@ -31,7 +31,7 @@ const VAD_CLOSE_THRESHOLD = 0.38;
 const TEN_VAD_SAMPLE_RATE = 16_000;
 const TEN_VAD_HOP_SIZE = 256;
 const THINKING_SOUND_URL = "/thinking-sounds/gemini-bips-loop.mp3";
-const THINKING_ASSET_BASE_GAIN = 0.126;
+const THINKING_ASSET_BASE_GAIN = 0.065;
 
 export type ThinkingSoundHandle = {
   setVolume: (volume: number) => void;

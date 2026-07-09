@@ -114,9 +114,25 @@ async function answerWithModel(
 
     if (signal.aborted) throw new Error("Reply cancelled.");
 
+    const textToolCall = allowTools ? extractTextToolCall(result.content) : null;
+    if (textToolCall) {
+      messages.push({
+        role: "assistant",
+        content: "",
+        tool_calls: [textToolCall],
+      });
+      const toolResult = await runToolCall(textToolCall, signal);
+      messages.push({
+        role: "tool",
+        tool_call_id: textToolCall.id,
+        content: toolResult,
+      });
+      continue;
+    }
+
     if (result.toolCalls.length === 0) {
       if (allowTools && roundContent.length > 0) {
-        emitFinalDelta(roundContent.join(""));
+        emitFinalDelta(stripToolMarkup(roundContent.join("")));
       }
       if (!finalContent.trim()) throw new Error("Reply model returned no content.");
       return finalContent.trim();
@@ -243,7 +259,7 @@ async function streamTogetherChat({
         const visibleContent = stripLeadingFinalMarker(delta.content, content);
         if (visibleContent.length > 0) {
           content += visibleContent;
-          streamContent(visibleContent);
+          streamContent(stripToolMarkup(visibleContent));
         }
       }
 
@@ -285,4 +301,43 @@ async function streamTogetherChat({
 function stripLeadingFinalMarker(delta: string, currentContent: string) {
   if (currentContent.length > 0) return delta;
   return delta.trim().toLowerCase() === "final" ? "" : delta;
+}
+
+export function extractTextToolCall(content: string): TogetherToolCall | null {
+  if (!/<tool_call>|<function=/i.test(content)) return null;
+
+  const name = content.match(/<function=([a-zA-Z0-9_-]+)>/)?.[1];
+  if (name !== "web_search") return null;
+
+  const args: Record<string, string | number> = {};
+  for (const match of content.matchAll(
+    /<parameter=([a-zA-Z0-9_-]+)>\s*([\s\S]*?)\s*<\/parameter>/g,
+  )) {
+    const key = match[1];
+    const value = match[2].trim();
+    if (key === "num_results") {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isFinite(parsed)) args[key] = parsed;
+    } else if (value) {
+      args[key] = value;
+    }
+  }
+
+  if (typeof args.query !== "string" || args.query.trim().length === 0) return null;
+
+  return {
+    id: "text_tool_web_search",
+    type: "function",
+    function: {
+      name,
+      arguments: JSON.stringify(args),
+    },
+  };
+}
+
+export function stripToolMarkup(content: string) {
+  if (/<\/?(?:tool_call|function|parameter)(?:[=>\s]|$)/i.test(content)) return "";
+
+  return content
+    .replace(/<\/?(?:tool_call|function|parameter)[^>]*>/gi, "");
 }

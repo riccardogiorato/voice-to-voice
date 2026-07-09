@@ -42,10 +42,15 @@ export type PartialTranscript = {
   baseText?: string;
 };
 
-type AssistantWordTiming = {
+export type AssistantWordTiming = {
   word: string;
   startSeconds: number;
   endSeconds: number;
+};
+
+export type AssistantWordTrack = {
+  startedAt: number;
+  timings: AssistantWordTiming[];
 };
 
 type ServerEvent =
@@ -76,15 +81,12 @@ type ClientEvent =
   | { type: "audio.commit" }
   | { type: "audio.input"; audio: string; sampleRate: number };
 
-const SPEECH_RMS_THRESHOLD = 0.024;
-const BARGE_IN_RMS_THRESHOLD = 0.038;
 const BARGE_IN_VAD_THRESHOLD = 0.72;
-const BARGE_IN_STRONG_VAD_THRESHOLD = 0.88;
 const BARGE_IN_HOLD_MS = 90;
 const ASSISTANT_AUDIO_TAIL_MS = 850;
 const SPEAKING_WATCHDOG_MS = 20_000;
 const VAD_SPEECH_HOLD_MS = 250;
-const RMS_SPEECH_HOLD_MS = 360;
+const MIC_ACTIVITY_RMS_FLOOR = 0.024;
 const MIN_SPEECH_MS = 380;
 const MIN_AUDIO_CHUNK_MS = 80;
 const PRE_ROLL_MS = 320;
@@ -120,8 +122,7 @@ export function useVoiceConversation() {
   const assistantGeneratedTextRef = useRef("");
   const ttsAudioStartsRef = useRef(new Map<string, number>());
   const ttsWordTimingsRef = useRef(new Map<string, AssistantWordTiming[]>());
-  const scheduledWordKeysRef = useRef(new Set<string>());
-  const wordTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const wordSyncFrameRef = useRef<number | null>(null);
   const nextPlayTimeRef = useRef(0);
   const phaseRef = useRef<Phase>("idle");
   const micBufferRef = useRef<Float32Array[]>([]);
@@ -216,7 +217,6 @@ export function useVoiceConversation() {
     if (isActive) return;
 
     clearDebugLog();
-    void ensureTenVad();
     setError("");
     setPartial(null);
     setAssistantDraft("");
@@ -228,6 +228,8 @@ export function useVoiceConversation() {
       const audioContext = new AudioContext({ latencyHint: "interactive" });
       audioContextRef.current = audioContext;
       await audioContext.resume();
+      const vad = await ensureTenVad();
+      if (!vad) throw new Error("Voice detection failed to load.");
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -414,6 +416,8 @@ export function useVoiceConversation() {
   }
 
   useEffect(() => {
+    void ensureTenVad();
+
     return () => {
       stopConversation();
     };
@@ -470,6 +474,10 @@ export function useVoiceConversation() {
     return isAssistantAudioActive() || now < assistantAudioBlockUntilRef.current;
   }
 
+  function isLocalAppAudioActive() {
+    return Boolean(thinkingSoundRef.current) || isAssistantAudioActive();
+  }
+
   function sendSpeechAudio(
     input: Float32Array,
     sampleRate: number,
@@ -493,7 +501,6 @@ export function useVoiceConversation() {
 
     if (isAssistantAudioBlockingMic(now) || phaseRef.current === "speaking") {
       const hasBargeInSpeech = detectBargeInSpeech({
-        level,
         vadProbability: vadDecision?.probability ?? null,
       });
 
@@ -524,12 +531,17 @@ export function useVoiceConversation() {
       }
     }
 
-    const openThreshold = Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current * 3);
-    const hasSpeech = vadSpeech ?? level >= openThreshold;
+    const hasSpeech = detectOpenSpeech({
+      vadSpeech,
+    });
     updateMicActivity(
       vadDecision
         ? normalizeRange(vadDecision.probability, 0.18, 0.92)
-        : normalizeRange(level, openThreshold * 0.35, openThreshold * 1.8),
+        : normalizeRange(
+            level,
+            MIC_ACTIVITY_RMS_FLOOR * 0.35,
+            MIC_ACTIVITY_RMS_FLOOR * 1.8,
+          ),
     );
 
     if (hasSpeech) {
@@ -561,7 +573,7 @@ export function useVoiceConversation() {
       );
     }
 
-    const holdMs = vad ? VAD_SPEECH_HOLD_MS : RMS_SPEECH_HOLD_MS;
+    const holdMs = VAD_SPEECH_HOLD_MS;
     const inSpeechTail = now - lastSpeechAtRef.current <= holdMs;
     if (!inSpeechTail) {
       const speechDuration = now - speechOpenedAtRef.current;
@@ -709,32 +721,51 @@ export function useVoiceConversation() {
       setAssistantDraftText("");
     }
 
-    ttsWordTimingsRef.current.set(event.itemId, timings);
-    scheduleAssistantWordsForItem(event.itemId);
+    ttsWordTimingsRef.current.set(
+      event.itemId,
+      mergeAssistantWordTimings(
+        ttsWordTimingsRef.current.get(event.itemId) ?? [],
+        timings,
+      ),
+    );
+    startAssistantWordSync();
   }
 
   function scheduleAssistantWordsForItem(itemId: string) {
+    if (!ttsAudioStartsRef.current.has(itemId)) return;
+    if (!ttsWordTimingsRef.current.has(itemId)) return;
+    startAssistantWordSync();
+  }
+
+  function startAssistantWordSync() {
+    if (wordSyncFrameRef.current !== null) return;
+
+    const tick = () => {
+      wordSyncFrameRef.current = null;
+      updateAssistantDraftFromPlaybackClock();
+      if (ttsWordTimingsRef.current.size > 0 && isAssistantAudioActive()) {
+        wordSyncFrameRef.current = requestAnimationFrame(tick);
+      }
+    };
+
+    wordSyncFrameRef.current = requestAnimationFrame(tick);
+  }
+
+  function updateAssistantDraftFromPlaybackClock() {
     const audioContext = audioContextRef.current;
-    const itemStartAt = ttsAudioStartsRef.current.get(itemId);
-    const timings = ttsWordTimingsRef.current.get(itemId);
-    if (!audioContext || itemStartAt === undefined || !timings) return;
+    if (!audioContext) return;
 
-    timings.forEach((timing, index) => {
-      const key = `${itemId}:${index}`;
-      if (scheduledWordKeysRef.current.has(key)) return;
-      scheduledWordKeysRef.current.add(key);
+    const tracks: AssistantWordTrack[] = [];
+    for (const [itemId, timings] of ttsWordTimingsRef.current) {
+      const startedAt = ttsAudioStartsRef.current.get(itemId);
+      if (startedAt === undefined) continue;
+      tracks.push({ startedAt, timings });
+    }
 
-      const delayMs = Math.max(
-        0,
-        (itemStartAt + timing.endSeconds - audioContext.currentTime) * 1000,
-      );
-      const timer = setTimeout(() => {
-        setAssistantDraftText(
-          appendSpokenWordText(assistantDraftRef.current, timing.word),
-        );
-      }, delayMs);
-      wordTimersRef.current.push(timer);
-    });
+    const spokenText = buildSpokenTextAtTime(tracks, audioContext.currentTime);
+    if (spokenText !== assistantDraftRef.current) {
+      setAssistantDraftText(spokenText);
+    }
   }
 
   function scheduleAssistantFinalizeAfterPlayback() {
@@ -771,11 +802,10 @@ export function useVoiceConversation() {
 
   function resetAssistantSpeechTracking() {
     clearAssistantFinalizeTimer();
-    clearAssistantWordTimers();
+    clearAssistantWordSync();
     assistantGeneratedTextRef.current = "";
     ttsAudioStartsRef.current.clear();
     ttsWordTimingsRef.current.clear();
-    scheduledWordKeysRef.current.clear();
     setAssistantDraftText("");
   }
 
@@ -785,9 +815,10 @@ export function useVoiceConversation() {
     assistantFinalizeTimerRef.current = null;
   }
 
-  function clearAssistantWordTimers() {
-    wordTimersRef.current.forEach((timer) => clearTimeout(timer));
-    wordTimersRef.current = [];
+  function clearAssistantWordSync() {
+    if (wordSyncFrameRef.current === null) return;
+    cancelAnimationFrame(wordSyncFrameRef.current);
+    wordSyncFrameRef.current = null;
   }
 
   function startThinkingSound() {
@@ -1011,21 +1042,19 @@ export function getPhaseAfterLocalSpeechStart(phase: Phase): Phase {
 }
 
 export function detectBargeInSpeech({
-  level,
   vadProbability,
 }: {
-  level: number;
   vadProbability: number | null;
 }) {
-  if (level >= BARGE_IN_RMS_THRESHOLD) return true;
-  if (vadProbability === null) return false;
+  return vadProbability !== null && vadProbability >= BARGE_IN_VAD_THRESHOLD;
+}
 
-  return (
-    (vadProbability >= BARGE_IN_VAD_THRESHOLD &&
-      level >= SPEECH_RMS_THRESHOLD * 0.75) ||
-    (vadProbability >= BARGE_IN_STRONG_VAD_THRESHOLD &&
-      level >= SPEECH_RMS_THRESHOLD * 0.5)
-  );
+export function detectOpenSpeech({
+  vadSpeech,
+}: {
+  vadSpeech: boolean | null;
+}) {
+  return vadSpeech ?? false;
 }
 
 export function appendSpokenWordText(current: string, word: string) {
@@ -1034,6 +1063,44 @@ export function appendSpokenWordText(current: string, word: string) {
   if (!trimmedWord) return trimmedCurrent;
   if (!trimmedCurrent) return trimmedWord;
   return `${trimmedCurrent} ${trimmedWord}`;
+}
+
+export function buildSpokenTextAtTime(
+  tracks: AssistantWordTrack[],
+  currentTime: number,
+  leadSeconds = 0.12,
+) {
+  return tracks
+    .flatMap((track) =>
+      track.timings
+        .filter((timing) => track.startedAt + timing.startSeconds <= currentTime + leadSeconds)
+        .map((timing) => timing.word),
+    )
+    .reduce(appendSpokenWordText, "");
+}
+
+export function mergeAssistantWordTimings(
+  existing: AssistantWordTiming[],
+  incoming: AssistantWordTiming[],
+) {
+  if (existing.length === 0) return incoming;
+  if (incoming.length === 0) return existing;
+
+  const last = existing[existing.length - 1];
+  const firstIncoming = incoming[0];
+  const offset =
+    firstIncoming.startSeconds < last.endSeconds
+      ? last.endSeconds
+      : 0;
+
+  return [
+    ...existing,
+    ...incoming.map((timing) => ({
+      ...timing,
+      startSeconds: timing.startSeconds + offset,
+      endSeconds: timing.endSeconds + offset,
+    })),
+  ];
 }
 
 export function appendAssistantTurn(turns: Turn[], text: string) {

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { buildSystemMessageContent, generateAssistantReply } from "./reply";
+import {
+  buildSystemMessageContent,
+  extractTextToolCall,
+  generateAssistantReply,
+  stripToolMarkup,
+} from "./reply";
 import { setToolCallRunnerForTest } from "./tools";
 
 const originalFetch = globalThis.fetch;
@@ -125,6 +130,44 @@ test("grounds the assistant prompt in the current date and requires search for c
   expect(prompt).toContain("sports");
   expect(prompt).toContain("Use web_search");
   expect(prompt).toContain("don't answer those from memory");
+});
+
+test("parses text-form tool calls instead of speaking their XML", () => {
+  const toolCall = extractTextToolCall(`
+<tool_call>
+<function=web_search>
+<parameter=query>
+Love Island UK season 13 total episodes 2026
+</parameter>
+<parameter=num_results>
+5
+</parameter>
+</function>
+</tool_call>
+`);
+
+  expect(toolCall).toMatchObject({
+    function: {
+      name: "web_search",
+      arguments: JSON.stringify({
+        query: "Love Island UK season 13 total episodes 2026",
+        num_results: 5,
+      }),
+    },
+  });
+});
+
+test("removes text-form tool markup from visible assistant output", () => {
+  expect(
+    stripToolMarkup(
+      "total </parameter>. <parameter=num_results>. 5. </parameter>.",
+    ).trim(),
+  ).toBe("");
+  expect(
+    stripToolMarkup(
+      "<tool_call><function=web_search><parameter=query>x</parameter></function></tool_call>",
+    ),
+  ).toBe("");
 });
 
 function sseResponse(chunks: unknown[]) {
