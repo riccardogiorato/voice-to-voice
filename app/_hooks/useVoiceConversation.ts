@@ -552,19 +552,19 @@ export function useVoiceConversation() {
 
     if (assistantBlocking) {
       if (!hasBargeInSpeech) {
-        resetMicGate();
+        resetMicGate({ resetMicLevel: false });
         bargeInStartedAtRef.current = Number.NEGATIVE_INFINITY;
         return;
       }
 
       if (bargeInStartedAtRef.current === Number.NEGATIVE_INFINITY) {
         bargeInStartedAtRef.current = now;
-        resetMicGate();
+        resetMicGate({ resetMicLevel: false });
         return;
       }
 
       if (!bargeInReady) {
-        resetMicGate();
+        resetMicGate({ resetMicLevel: false });
         return;
       }
 
@@ -655,7 +655,8 @@ export function useVoiceConversation() {
     flushSpeechAudio(socket, sampleRate);
   }
 
-  function resetMicGate() {
+  function resetMicGate(options: { resetMicLevel?: boolean } = {}) {
+    const { resetMicLevel = true } = options;
     micBufferRef.current = [];
     micBufferSamplesRef.current = 0;
     lastSpeechAtRef.current = Number.NEGATIVE_INFINITY;
@@ -666,7 +667,9 @@ export function useVoiceConversation() {
     preRollSamplesRef.current = 0;
     speechOpenedAtRef.current = Number.NEGATIVE_INFINITY;
     updateMicActivity(0, true);
-    updateMicLevel(0, true);
+    if (resetMicLevel) {
+      updateMicLevel(0, true);
+    }
   }
 
   function flushSpeechAudio(socket: WebSocket, sampleRate: number) {

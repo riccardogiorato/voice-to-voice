@@ -232,15 +232,15 @@ button {
 
 .voice-mic-meter {
   --mic-level: 0;
-  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
   width: min(34vw, 132px);
-  height: 5px;
+  height: 18px;
   margin-top: -10px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(5, 5, 5, 0.08);
   opacity: 0;
-  transform: translateY(-2px) scaleX(0.94);
+  transform: translateY(-2px) scale(0.96);
   transition-property: opacity, transform;
   transition-duration: 180ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
@@ -248,18 +248,22 @@ button {
 
 .voice-mic-meter-active {
   opacity: 0.72;
-  transform: translateY(0) scaleX(1);
+  transform: translateY(0) scale(1);
 }
 
 .voice-mic-meter span {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(90deg, rgba(198, 168, 244, 0.8), rgba(239, 44, 193, 0.9), rgba(252, 76, 2, 0.82));
-  box-shadow: 0 0 14px rgba(239, 44, 193, 0.22);
-  transform: scaleX(max(0.04, var(--mic-level)));
-  transform-origin: 0 50%;
-  transition-property: transform;
+  --meter-gain: 0.5;
+  width: 3px;
+  height: 16px;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(198, 168, 244, 0.86), rgba(239, 44, 193, 0.86), rgba(252, 76, 2, 0.74)),
+    rgba(5, 5, 5, 0.1);
+  box-shadow: 0 4px 12px rgba(239, 44, 193, 0.14);
+  opacity: calc(0.32 + (var(--mic-level) * 0.58));
+  transform: scaleY(calc(0.14 + (var(--mic-level) * var(--meter-gain) * 0.86)));
+  transform-origin: 50% 50%;
+  transition-property: opacity, transform;
   transition-duration: 90ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
