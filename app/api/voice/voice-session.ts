@@ -10,6 +10,7 @@ import {
   REPLY_GRACE_INCOMPLETE_MS,
   REPLY_GRACE_MS,
   resample,
+  detectSpokenLanguage,
   transcriptLooksComplete,
   shouldFlushFirstTtsChunk,
   STT_MODELS,
@@ -63,6 +64,7 @@ export class VoiceSession {
   private deferredAnswer?: { rawTranscript: string; merged: boolean };
   private answerAudioStarted = false;
   private continuationPending = false;
+  private ttsLanguage = "en";
   private lastRawTranscript = "";
   private lastRepairedTranscript = "";
   private ttsDoneWatchdog?: NodeJS.Timeout;
@@ -155,6 +157,8 @@ export class VoiceSession {
     url.searchParams.set("segment", "immediate");
     url.searchParams.set("max_partial_length", "80");
     url.searchParams.set("alignment", "word");
+    // Reconnects and fallbacks keep speaking the conversation's language.
+    url.searchParams.set("language", this.ttsLanguage);
 
     this.tts = new WebSocket(url.toString(), {
       headers: { Authorization: `Bearer ${process.env.TOGETHER_API_KEY}` },
@@ -502,6 +506,7 @@ export class VoiceSession {
     this.turnCount += 1;
     this.ttsContextId = `turn-${this.turnCount}`;
     this.answerAudioStarted = false;
+    this.syncTtsLanguage(transcript);
 
     this.history.push({ role: "user", content: transcript });
     this.trimHistory();
@@ -689,6 +694,25 @@ export class VoiceSession {
         content: turn.text.trim().slice(0, 800),
       }));
     this.trimHistory();
+  }
+
+  // The prompt makes the assistant reply in the user's language, so the
+  // transcript is a reliable early signal for what TTS is about to speak.
+  // Cartesia needs the language hint or non-English replies get English
+  // phonemes. Unsure detections keep the current language.
+  private syncTtsLanguage(transcript: string) {
+    const detected = detectSpokenLanguage(transcript);
+    if (!detected || detected === this.ttsLanguage) return;
+
+    this.ttsLanguage = detected;
+    if (this.tts && this.ttsReady && this.tts.readyState === WebSocket.OPEN) {
+      this.tts.send(
+        JSON.stringify({
+          type: "tts_session.updated",
+          session: { language: detected },
+        }),
+      );
+    }
   }
 
   private speak(text: string) {

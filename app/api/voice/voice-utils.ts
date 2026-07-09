@@ -201,6 +201,38 @@ function isLowIntentNoiseTranscript(normalized: string) {
   );
 }
 
+// Fast heuristic language id for TTS voice/language matching. Sits on the
+// answer path, so it must be instant: stopword hits + diacritic signals.
+// Returns null when unsure so the caller keeps the current language.
+const LANGUAGE_STOPWORDS: Record<string, Set<string>> = {
+  en: new Set(["the", "is", "are", "you", "what", "how", "and", "of", "to", "it", "that", "do", "can", "in"]),
+  it: new Set(["che", "come", "sono", "sei", "il", "la", "di", "non", "per", "con", "una", "cosa", "mi", "ciao", "grazie", "oggi", "posso", "puoi"]),
+  es: new Set(["que", "como", "estas", "el", "los", "las", "de", "no", "por", "con", "una", "hola", "gracias", "hoy", "puedes", "donde", "para"]),
+  fr: new Set(["que", "comment", "est", "le", "les", "des", "de", "ne", "pas", "pour", "avec", "une", "bonjour", "merci", "vous", "je", "quoi"]),
+};
+
+export function detectSpokenLanguage(text: string): string | null {
+  const words = normalizeTranscript(text).split(" ").filter(Boolean);
+  if (words.length === 0) return null;
+
+  const scores: Record<string, number> = { en: 0, it: 0, es: 0, fr: 0 };
+  for (const word of words) {
+    for (const [lang, stopwords] of Object.entries(LANGUAGE_STOPWORDS)) {
+      if (stopwords.has(word)) scores[lang] += 1;
+    }
+  }
+  // Diacritics are strong signals stopwords can miss on short utterances.
+  if (/[àèéìòù]/.test(text) && !/[¿¡ñ]/.test(text)) scores.it += 1;
+  if (/[¿¡ñ]/.test(text)) scores.es += 2;
+  if (/[êëîïûüœ]|c'est|qu'/.test(text)) scores.fr += 2;
+
+  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  const [bestLang, bestScore] = ranked[0];
+  // Require a clear winner; ties or weak evidence keep the current language.
+  if (bestScore === 0 || bestScore === ranked[1][1]) return null;
+  return bestLang;
+}
+
 export function transcriptLooksComplete(text: string) {
   return /[.?!]["')\]]?$/u.test(text.trim());
 }
