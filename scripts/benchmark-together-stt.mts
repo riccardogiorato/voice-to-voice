@@ -143,6 +143,7 @@ const FIXTURE_SAMPLE_RATE = 16000;
 
 const TTS_BY_LANGUAGE: Record<string, TtsConfig> = {
   en: { model: 'hexgrad/Kokoro-82M', voice: 'af_heart', sampleRate: TTS_SYNTH_SAMPLE_RATE },
+  es: { model: 'hexgrad/Kokoro-82M', voice: 'ef_dora', sampleRate: TTS_SYNTH_SAMPLE_RATE },
   fr: { model: 'hexgrad/Kokoro-82M', voice: 'ff_siwis', sampleRate: TTS_SYNTH_SAMPLE_RATE },
   it: { model: 'hexgrad/Kokoro-82M', voice: 'if_sara', sampleRate: TTS_SYNTH_SAMPLE_RATE },
   ja: { model: 'hexgrad/Kokoro-82M', voice: 'jf_alpha', sampleRate: TTS_SYNTH_SAMPLE_RATE },
@@ -168,6 +169,18 @@ const FIXTURES: FixtureDefinition[] = [
     language: 'en',
     scoring: 'wer',
     text: 'What is the fastest open source language model right now?',
+  },
+  {
+    name: 'stt-bench-es-1.pcm',
+    language: 'es',
+    scoring: 'wer',
+    text: '¿Hola, puedes decirme qué tiempo hace hoy en Madrid?',
+  },
+  {
+    name: 'stt-bench-es-2.pcm',
+    language: 'es',
+    scoring: 'wer',
+    text: 'Quisiera reservar una mesa para dos personas esta noche.',
   },
   {
     name: 'stt-bench-fr-1.pcm',
