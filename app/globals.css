@@ -262,7 +262,16 @@ button {
 }
 
 .voice-orb-button {
+  --voice-orb-size: min(72vw, 310px);
+  display: grid;
+  width: var(--voice-orb-size);
+  height: var(--voice-orb-size);
+  place-items: center;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
   transition-property: scale;
   transition-duration: 150ms;
 }
@@ -273,6 +282,12 @@ button {
 
 .voice-orb-button:disabled {
   cursor: default;
+}
+
+.voice-shader-orb {
+  display: block;
+  width: var(--voice-orb-size);
+  height: var(--voice-orb-size);
 }
 
 .voice-mic-meter {

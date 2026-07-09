@@ -214,10 +214,12 @@ export function createInteractiveAudioContext() {
 export function createThinkingSound(
   audioContext: AudioContext,
   volume = 1,
+  meterNode?: AudioNode,
 ): ThinkingSoundHandle {
   const master = audioContext.createGain();
   master.gain.value = 0;
   master.connect(audioContext.destination);
+  if (meterNode) master.connect(meterNode);
 
   let source: AudioBufferSourceNode | null = null;
   let stopped = false;

@@ -48,7 +48,12 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
       : phaseCopy[voice.phase];
   const waveformVisible = voice.userSpeaking && !voice.muted;
   const micMeterVisible = voice.isActive && !voice.muted;
-  const voiceActivity = waveformVisible ? voice.micActivity : 0;
+  const voiceActivity =
+    voice.phase === "speaking" || voice.phase === "thinking"
+      ? voice.assistantActivity
+      : voice.phase === "listening" && !voice.muted
+        ? Math.max(waveformVisible ? voice.micActivity : 0, voice.micLevel * 0.24)
+        : 0;
   const micLevel = micMeterVisible ? voice.micLevel : 0;
 
   return (

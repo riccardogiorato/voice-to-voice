@@ -1,5 +1,5 @@
-import type { CSSProperties } from "react";
 import type { VoiceOrbPhase } from "./types";
+import { VoiceShaderOrb } from "./VoiceShaderOrb";
 
 export function VoiceOrbButton({
   phase,
@@ -8,14 +8,10 @@ export function VoiceOrbButton({
   onClick,
 }: {
   phase: VoiceOrbPhase;
-  activity: number | string;
+  activity: number;
   disabled?: boolean;
   onClick?: () => void;
 }) {
-  const style = {
-    "--voice-activity": typeof activity === "number" ? activity.toFixed(3) : activity,
-  } as CSSProperties;
-
   return (
     <button
       className="voice-orb-button"
@@ -25,9 +21,7 @@ export function VoiceOrbButton({
       aria-label="Start conversation"
       title={disabled ? undefined : "Start conversation"}
     >
-      <div className={`voice-orb voice-orb-${phase}`} style={style} aria-hidden>
-        <div className="voice-orb-core" />
-      </div>
+      <VoiceShaderOrb phase={phase} activity={activity} />
     </button>
   );
 }

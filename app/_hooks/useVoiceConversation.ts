@@ -137,6 +137,7 @@ export function useVoiceConversation() {
   const [muted, setMuted] = useState(false);
   const [micActivity, setMicActivity] = useState(0);
   const [micLevel, setMicLevel] = useState(0);
+  const [assistantActivity, setAssistantActivity] = useState(0);
   const [userSpeaking, setUserSpeaking] = useState(false);
   const [toolActivities, setToolActivities] = useState<ToolActivityItem[]>([]);
   const [debugCopied, setDebugCopied] = useState(false);
@@ -153,6 +154,11 @@ export function useVoiceConversation() {
   const silentGainRef = useRef<GainNode | null>(null);
   const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const thinkingSoundRef = useRef<ThinkingSoundHandle | null>(null);
+  const outputAnalyserRef = useRef<AnalyserNode | null>(null);
+  const outputMeterDataRef = useRef<Float32Array<ArrayBuffer> | null>(null);
+  const outputMeterFrameRef = useRef<number | null>(null);
+  const assistantActivityRef = useRef(0);
+  const lastAssistantActivityPaintRef = useRef(0);
   const assistantDraftRef = useRef("");
   const assistantGeneratedTextRef = useRef("");
   const ttsAudioStartsRef = useRef(new Map<string, number>());
@@ -495,6 +501,7 @@ export function useVoiceConversation() {
     resetAssistantSpeechTracking();
     setMicActivity(0);
     setMicLevel(0);
+    updateAssistantActivity(0, true);
     setUserSpeaking(false);
   }
 
@@ -526,8 +533,11 @@ export function useVoiceConversation() {
     lastMicActivityPaintRef.current = 0;
     micLevelRef.current = 0;
     lastMicLevelPaintRef.current = 0;
+    assistantActivityRef.current = 0;
+    lastAssistantActivityPaintRef.current = 0;
     setMicActivity(0);
     setMicLevel(0);
+    setAssistantActivity(0);
     setUserSpeaking(false);
     nextPlayTimeRef.current = 0;
     stopThinkingSound();
@@ -549,6 +559,10 @@ export function useVoiceConversation() {
     tenVadRef.current?.destroy();
     tenVadRef.current = null;
     tenVadPromiseRef.current = null;
+    outputAnalyserRef.current?.disconnect();
+    outputAnalyserRef.current = null;
+    outputMeterDataRef.current = null;
+    stopOutputMeter();
   }
 
   function isAssistantAudioActive() {
@@ -881,6 +895,7 @@ export function useVoiceConversation() {
     bargeInLastEvidenceAtRef.current = Number.NEGATIVE_INFINITY;
     bargeInCaptureUntilRef.current = Number.NEGATIVE_INFINITY;
     pcmLeftoverRef.current = null;
+    if (!thinkingSoundRef.current) updateAssistantActivity(0, true);
     if (pendingPhaseRef.current) {
       flushPendingPhase();
     }
@@ -1041,7 +1056,8 @@ export function useVoiceConversation() {
     const audioContext = audioContextRef.current;
     if (!audioContext || thinkingSoundRef.current) return;
 
-    thinkingSoundRef.current = createThinkingSound(audioContext);
+    thinkingSoundRef.current = createThinkingSound(audioContext, 1, ensureOutputAnalyser(audioContext));
+    startOutputMeter();
   }
 
   function stopThinkingSound() {
@@ -1062,6 +1078,8 @@ export function useVoiceConversation() {
     const source = audioContext.createBufferSource();
     source.buffer = buffer;
     source.connect(audioContext.destination);
+    source.connect(ensureOutputAnalyser(audioContext));
+    startOutputMeter();
 
     const startAt = Math.max(audioContext.currentTime + 0.02, nextPlayTimeRef.current);
     source.start(startAt);
@@ -1193,6 +1211,60 @@ export function useVoiceConversation() {
     setMicLevel(smoothed);
   }
 
+  function ensureOutputAnalyser(audioContext: AudioContext) {
+    if (outputAnalyserRef.current) return outputAnalyserRef.current;
+
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.72;
+    outputAnalyserRef.current = analyser;
+    outputMeterDataRef.current = new Float32Array(analyser.fftSize);
+    return analyser;
+  }
+
+  function startOutputMeter() {
+    if (outputMeterFrameRef.current !== null) return;
+
+    const tick = () => {
+      outputMeterFrameRef.current = null;
+      const analyser = outputAnalyserRef.current;
+      const data = outputMeterDataRef.current;
+
+      if (analyser && data) {
+        analyser.getFloatTimeDomainData(data);
+        updateAssistantActivity(normalizeRange(rms(data), 0.0015, 0.028));
+      }
+
+      if (isLocalAppAudioActive()) {
+        outputMeterFrameRef.current = requestAnimationFrame(tick);
+        return;
+      }
+
+      updateAssistantActivity(0);
+    };
+
+    outputMeterFrameRef.current = requestAnimationFrame(tick);
+  }
+
+  function stopOutputMeter() {
+    if (outputMeterFrameRef.current === null) return;
+    cancelAnimationFrame(outputMeterFrameRef.current);
+    outputMeterFrameRef.current = null;
+  }
+
+  function updateAssistantActivity(next: number, immediate = false) {
+    const smoothed = immediate
+      ? next
+      : assistantActivityRef.current * 0.7 + clamp01(next) * 0.3;
+    assistantActivityRef.current = smoothed;
+
+    const now = performance.now();
+    if (!immediate && now - lastAssistantActivityPaintRef.current < 70) return;
+
+    lastAssistantActivityPaintRef.current = now;
+    setAssistantActivity(smoothed);
+  }
+
   const transcriptItems = useMemo<TranscriptItem[]>(() => {
     return buildTranscriptItems({ turns, partial, assistantDraft });
   }, [assistantDraft, partial, turns]);
@@ -1219,6 +1291,7 @@ export function useVoiceConversation() {
     conversationScrollRef,
     error,
     isActive,
+    assistantActivity,
     micActivity,
     micLevel,
     muted,
