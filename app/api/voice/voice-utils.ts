@@ -6,6 +6,8 @@ const STT_FALLBACK_MODEL = envOrDefault(
   "TOGETHER_STT_FALLBACK_MODEL",
   "openai/whisper-large-v3",
 );
+// Replies need reasoning/tool-call behavior; keep smaller Qwen models for transcript repair.
+// Override via env for latency experiments.
 export const CHAT_MODEL = envOrDefault(
   "TOGETHER_CHAT_MODEL",
   "nvidia/nemotron-3-ultra-550b-a55b",
@@ -28,8 +30,12 @@ export const TTS_MODELS = uniqueTtsConfigs([
   { model: TTS_MODEL, voice: TTS_VOICE },
   { model: TTS_FALLBACK_MODEL, voice: TTS_FALLBACK_VOICE },
 ]);
-export const TRANSCRIPT_MERGE_WINDOW_MS = 4000;
-export const REPLY_GRACE_MS = 1700;
+// Merge window: long enough to catch a mid-sentence pause continuation,
+// short enough to never swallow a legitimate follow-up question.
+export const TRANSCRIPT_MERGE_WINDOW_MS = 1500;
+// The client VAD already decided the user finished; this only coalesces
+// photo-finish arrivals. Anything longer re-litigates endpointing.
+export const REPLY_GRACE_MS = 300;
 export const TRANSCRIPT_REPAIR_TIMEOUT_MS = 2500;
 const GHOST_TRANSCRIPTS = new Set([
   "you",

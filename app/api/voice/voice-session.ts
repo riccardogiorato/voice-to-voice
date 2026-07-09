@@ -53,6 +53,7 @@ export class VoiceSession {
   private speechIdleTimer?: NodeJS.Timeout;
   private awaitingCommittedTranscript = false;
   private deferredAnswer?: { rawTranscript: string; merged: boolean };
+  private answerAudioStarted = false;
   private lastRawTranscript = "";
   private lastRepairedTranscript = "";
   private ttsDoneWatchdog?: NodeJS.Timeout;
@@ -246,8 +247,11 @@ export class VoiceSession {
       }
 
       const now = Date.now();
+      // Merging retracts the previous turn, so it is only safe while the
+      // user hasn't heard any of the reply yet.
       const shouldMerge =
         this.lastUserTranscript.length > 0 &&
+        !this.answerAudioStarted &&
         now - this.lastUserFinalAt < TRANSCRIPT_MERGE_WINDOW_MS;
       const finalTranscript = shouldMerge
         ? mergeTranscriptText(this.lastUserTranscript, transcript)
@@ -287,6 +291,7 @@ export class VoiceSession {
     }
 
     if (message.type === "conversation.item.audio_output.delta") {
+      this.answerAudioStarted = true;
       this.send("audio.delta", { audio: message.delta, sampleRate: 24000 });
       this.scheduleTtsDoneWatchdog(TTS_DONE_AFTER_AUDIO_IDLE_MS);
       return;
@@ -377,6 +382,7 @@ export class VoiceSession {
 
     this.turnCount += 1;
     this.ttsContextId = `turn-${this.turnCount}`;
+    this.answerAudioStarted = false;
 
     this.history.push({ role: "user", content: transcript });
     this.trimHistory();
@@ -515,6 +521,7 @@ export class VoiceSession {
 
   private getPendingMergeBase() {
     if (!this.lastUserTranscript) return "";
+    if (this.answerAudioStarted) return "";
     if (Date.now() - this.lastUserFinalAt >= TRANSCRIPT_MERGE_WINDOW_MS) return "";
     return this.lastUserTranscript;
   }
