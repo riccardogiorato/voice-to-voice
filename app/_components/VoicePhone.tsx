@@ -14,7 +14,6 @@ import {
 import Image from "next/image";
 import type { CSSProperties } from "react";
 import { useState } from "react";
-import { ThinkingSoundControl } from "@/app/_components/ThinkingSoundControl";
 import type { useVoiceConversation } from "@/app/_hooks/useVoiceConversation";
 
 type VoiceConversation = ReturnType<typeof useVoiceConversation>;
@@ -130,7 +129,6 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                     <dd className="font-medium text-[#050505]">Sonic 3 / Kokoro</dd>
                   </div>
                 </dl>
-                <ThinkingSoundControl className="mt-4" variant="compact" />
                 <button
                   className="mt-4 flex w-full items-center justify-center gap-2 rounded-full bg-[#050505] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(5,5,5,0.16)] transition-[scale,background-color] duration-150 active:scale-[0.98]"
                   type="button"
@@ -200,9 +198,11 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
                         style={{
                           opacity: turn.live
                             ? 1
-                            : Math.max(0.6, 0.95 - (voice.transcriptItems.length - index - 1) * 0.1),
+                            : turn.role === "user" && turn.settled === false
+                              ? 0.72
+                              : Math.max(0.6, 0.95 - (voice.transcriptItems.length - index - 1) * 0.1),
                         }}
-                        key={`${turn.role}-${index}-${turn.text}`}
+                        key={`${turn.role}-${index}`}
                       >
                         {turn.text}
                       </p>

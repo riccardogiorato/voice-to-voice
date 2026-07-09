@@ -15,6 +15,7 @@ import {
   TRANSCRIPT_REPAIR_MODEL,
   TRANSCRIPT_REPAIR_TIMEOUT_MS,
   TTS_MODELS,
+  wordChangeRatio,
 } from "./voice-utils";
 import { generateAssistantReply } from "./reply";
 import { repairTranscript } from "./transcript-repair";
@@ -466,16 +467,24 @@ export class VoiceSession {
       this.answerTimer = undefined;
       this.deferredAnswer = undefined;
       if (!this.stopped) {
-        void this.settleTranscriptAndAnswer(rawTranscript, merged, transcriptId);
+        this.startTurn(rawTranscript, merged, transcriptId);
       }
     }, REPLY_GRACE_MS);
   }
 
-  private async settleTranscriptAndAnswer(
-    rawTranscript: string,
-    merged: boolean,
-    transcriptId: number,
-  ) {
+  private startTurn(rawTranscript: string, merged: boolean, transcriptId: number) {
+    this.lastRawTranscript = rawTranscript;
+    this.lastRepairedTranscript = rawTranscript;
+    this.lastUserTranscript = rawTranscript;
+    this.lastUserFinalAt = Date.now();
+    this.send("transcript.final", { text: rawTranscript, merged });
+
+    // Repair is a display-only cosmetic track: the answer never waits for it.
+    void this.repairForDisplay(rawTranscript, transcriptId);
+    void this.answer(rawTranscript);
+  }
+
+  private async repairForDisplay(rawTranscript: string, transcriptId: number) {
     const controller = new AbortController();
     this.repairAbort = controller;
     const timeout = setTimeout(
@@ -499,19 +508,28 @@ export class VoiceSession {
       if (this.repairAbort === controller) this.repairAbort = undefined;
     }
 
+    // A late or runaway repair is discarded, never applied: text must not
+    // change after the client's settle window, and a "repair" that rewrites
+    // most of the words is worse than a typo.
     if (this.stopped || transcriptId !== this.pendingTranscriptId) return;
+    if (normalizeTranscript(repairedTranscript) === normalizeTranscript(rawTranscript)) {
+      return;
+    }
+    if (wordChangeRatio(rawTranscript, repairedTranscript) > 0.4) return;
 
-    this.lastRawTranscript = rawTranscript;
     this.lastRepairedTranscript = repairedTranscript;
-    this.lastUserTranscript = repairedTranscript;
-    this.lastUserFinalAt = Date.now();
-    this.send("transcript.final", {
-      text: repairedTranscript,
-      merged,
-      repaired:
-        normalizeTranscript(repairedTranscript) !== normalizeTranscript(rawTranscript),
-    });
-    await this.answer(repairedTranscript);
+    if (this.lastUserTranscript === rawTranscript) {
+      this.lastUserTranscript = repairedTranscript;
+    }
+    for (let i = this.history.length - 1; i >= 0; i -= 1) {
+      if (this.history[i].role === "user") {
+        if (this.history[i].content === rawTranscript) {
+          this.history[i] = { role: "user", content: repairedTranscript };
+        }
+        break;
+      }
+    }
+    this.send("transcript.updated", { text: repairedTranscript });
   }
 
   private retractLastTurnForMerge() {

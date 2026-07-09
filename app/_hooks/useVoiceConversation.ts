@@ -21,6 +21,9 @@ type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 export type Turn = {
   role: "user" | "assistant";
   text: string;
+  // User turns render in a "drafting" style until repair lands or the
+  // settle window passes; after that the text never changes again.
+  settled?: boolean;
 };
 
 type TranscriptItem = Turn & {
@@ -42,7 +45,8 @@ export type PartialTranscript = {
 type ServerEvent =
   | { type: "state"; state: Phase }
   | { type: "transcript.delta"; text: string; baseText?: string; merged?: boolean }
-  | { type: "transcript.final"; text: string; merged?: boolean; repaired?: boolean }
+  | { type: "transcript.final"; text: string; merged?: boolean }
+  | { type: "transcript.updated"; text: string }
   | { type: "transcript.ignored"; text?: string }
   | { type: "assistant.delta"; text: string }
   | { type: "audio.delta"; audio: string; sampleRate: number }
@@ -69,6 +73,9 @@ const RMS_SPEECH_HOLD_MS = 360;
 const MIN_SPEECH_MS = 380;
 const MIN_AUDIO_CHUNK_MS = 80;
 const PRE_ROLL_MS = 320;
+// Server caps repair at 800ms; after this window the bubble solidifies and
+// its text never changes again.
+const TRANSCRIPT_SETTLE_MS = 1000;
 const VAD_OPEN_THRESHOLD = 0.76;
 const VAD_CLOSE_THRESHOLD = 0.46;
 const MAX_COMMITTED_TURNS = 24;
@@ -119,6 +126,7 @@ export function useVoiceConversation() {
   const lastDebugPaintRef = useRef(0);
   const pendingPlaybackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const speakingWatchdogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isActive = phase !== "idle";
 
@@ -266,6 +274,20 @@ export function useVoiceConversation() {
     if (event.type === "transcript.final") {
       setPartial(null);
       setTurns((current) => applyTranscriptFinalToTurns(current, event));
+      if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = setTimeout(() => {
+        settleTimerRef.current = null;
+        setTurns((current) => settleLastUserTurn(current));
+      }, TRANSCRIPT_SETTLE_MS);
+      return;
+    }
+
+    if (event.type === "transcript.updated") {
+      if (settleTimerRef.current) {
+        clearTimeout(settleTimerRef.current);
+        settleTimerRef.current = null;
+      }
+      setTurns((current) => applyTranscriptUpdateToTurns(current, event.text));
       return;
     }
 
@@ -810,11 +832,37 @@ export function applyTranscriptFinalToTurns(
     event.merged && lastIndex >= 0 && next[lastIndex].role === "user";
 
   if (shouldUpdateCurrentUser) {
-    next[lastIndex] = { role: "user", text: event.text };
+    next[lastIndex] = { role: "user", text: event.text, settled: false };
     return trimCommittedTurns(next);
   }
 
-  return trimCommittedTurns([...next, { role: "user", text: event.text }]);
+  return trimCommittedTurns([
+    ...next,
+    { role: "user", text: event.text, settled: false },
+  ]);
+}
+
+export function applyTranscriptUpdateToTurns(turns: Turn[], text: string) {
+  const next = turns.slice();
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    if (next[i].role === "user") {
+      next[i] = { role: "user", text, settled: true };
+      break;
+    }
+  }
+  return next;
+}
+
+export function settleLastUserTurn(turns: Turn[]) {
+  const next = turns.slice();
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    if (next[i].role === "user") {
+      if (next[i].settled) return turns;
+      next[i] = { ...next[i], settled: true };
+      break;
+    }
+  }
+  return next;
 }
 
 export function appendAssistantTurn(turns: Turn[], text: string) {

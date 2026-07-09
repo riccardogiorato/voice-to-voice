@@ -36,7 +36,9 @@ export const TRANSCRIPT_MERGE_WINDOW_MS = 1500;
 // The client VAD already decided the user finished; this only coalesces
 // photo-finish arrivals. Anything longer re-litigates endpointing.
 export const REPLY_GRACE_MS = 300;
-export const TRANSCRIPT_REPAIR_TIMEOUT_MS = 2500;
+// Repair is cosmetic-only; a result landing after the client's settle
+// window would rewrite text the user already trusts, so cap it hard.
+export const TRANSCRIPT_REPAIR_TIMEOUT_MS = 800;
 const GHOST_TRANSCRIPTS = new Set([
   "you",
   "thank you",
@@ -176,6 +178,25 @@ export function isGhostTranscript(transcript: string) {
   if (!normalized) return true;
   if (!GHOST_TRANSCRIPTS.has(normalized)) return false;
   return normalized.split(" ").length <= 3;
+}
+
+export function wordChangeRatio(before: string, after: string) {
+  const beforeWords = normalizeTranscript(before).split(" ").filter(Boolean);
+  const afterWords = normalizeTranscript(after).split(" ").filter(Boolean);
+  if (beforeWords.length === 0) return afterWords.length === 0 ? 0 : 1;
+
+  const counts = new Map<string, number>();
+  for (const word of beforeWords) counts.set(word, (counts.get(word) ?? 0) + 1);
+  let common = 0;
+  for (const word of afterWords) {
+    const count = counts.get(word) ?? 0;
+    if (count > 0) {
+      common += 1;
+      counts.set(word, count - 1);
+    }
+  }
+
+  return 1 - common / Math.max(beforeWords.length, afterWords.length);
 }
 
 export function mergeTranscriptText(previous: string, next: string) {
