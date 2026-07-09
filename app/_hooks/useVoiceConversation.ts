@@ -116,6 +116,8 @@ const VAD_SPEECH_HOLD_MS = 700;
 const MAX_SPEECH_SEGMENT_MS = 8_000;
 const VAD_DEBUG_INTERVAL_MS = 1_000;
 const MIC_ACTIVITY_RMS_FLOOR = 0.024;
+const OPEN_SPEECH_LEVEL_FLOOR = 0.003;
+const OPEN_SPEECH_VAD_THRESHOLD = 0.56;
 const MIN_SPEECH_MS = 380;
 const MIN_AUDIO_CHUNK_MS = 80;
 const PRE_ROLL_MS = 320;
@@ -583,6 +585,8 @@ export function useVoiceConversation() {
     const vadDecision = vad?.process(input, sampleRate) ?? null;
     const vadSpeech = vadDecision?.isSpeech ?? null;
     const hasSpeech = detectOpenSpeech({
+      level,
+      vadProbability: vadDecision?.probability ?? null,
       vadSpeech,
     });
     const hasBargeInSpeech = detectBargeInSpeech({
@@ -1296,11 +1300,17 @@ export function detectBargeInSpeech({
 }
 
 export function detectOpenSpeech({
+  level,
+  vadProbability,
   vadSpeech,
 }: {
+  level: number;
+  vadProbability: number | null;
   vadSpeech: boolean | null;
 }) {
-  return vadSpeech ?? false;
+  if (vadSpeech !== true) return false;
+  if (level < OPEN_SPEECH_LEVEL_FLOOR) return false;
+  return vadProbability === null || vadProbability >= OPEN_SPEECH_VAD_THRESHOLD;
 }
 
 export function detectBufferedSpeech({

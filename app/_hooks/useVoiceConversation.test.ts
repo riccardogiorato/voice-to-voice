@@ -305,21 +305,45 @@ test("keeps capturing a barge-in utterance after playback is cancelled", () => {
 test("opens speech using TEN VAD only", () => {
   expect(
     detectOpenSpeech({
+      level: 0.01,
+      vadProbability: null,
       vadSpeech: null,
     }),
   ).toBe(false);
 
   expect(
     detectOpenSpeech({
+      level: 0.01,
+      vadProbability: 0.9,
       vadSpeech: false,
     }),
   ).toBe(false);
 
   expect(
     detectOpenSpeech({
+      level: 0.01,
+      vadProbability: 0.7,
       vadSpeech: true,
     }),
   ).toBe(true);
+});
+
+test("does not open speech for low-energy VAD false positives", () => {
+  expect(
+    detectOpenSpeech({
+      level: 0.00201,
+      vadProbability: 0.521,
+      vadSpeech: true,
+    }),
+  ).toBe(false);
+
+  expect(
+    detectOpenSpeech({
+      level: 0.01,
+      vadProbability: 0.521,
+      vadSpeech: true,
+    }),
+  ).toBe(false);
 });
 
 test("keeps speech open through a short hesitation", () => {

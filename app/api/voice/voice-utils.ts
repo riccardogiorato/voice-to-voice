@@ -46,10 +46,14 @@ export const REPLY_GRACE_INCOMPLETE_MS = 1200;
 // window would rewrite text the user already trusts, so cap it hard.
 export const TRANSCRIPT_REPAIR_TIMEOUT_MS = 800;
 const GHOST_TRANSCRIPTS = new Set([
+  "ok",
+  "okay",
   "you",
   "thank you",
   "thanks for watching",
   "hmm",
+  "mm hmm",
+  "mhm",
   "uh",
   "um",
 ]);
@@ -187,8 +191,14 @@ export function cleanTranscript(transcript: string) {
 export function isGhostTranscript(transcript: string) {
   const normalized = normalizeTranscript(transcript);
   if (!normalized) return true;
-  if (!GHOST_TRANSCRIPTS.has(normalized)) return false;
-  return normalized.split(" ").length <= 3;
+  if (GHOST_TRANSCRIPTS.has(normalized)) return normalized.split(" ").length <= 3;
+  return isLowIntentNoiseTranscript(normalized);
+}
+
+function isLowIntentNoiseTranscript(normalized: string) {
+  return /^(?:ok(?:ay)?\s+)?(?:mm\s+hmm|mhm)(?:\s+i\s+don\s+t\s+know)?$/u.test(
+    normalized,
+  );
 }
 
 export function transcriptLooksComplete(text: string) {
