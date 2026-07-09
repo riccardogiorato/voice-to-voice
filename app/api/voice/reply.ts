@@ -26,6 +26,14 @@ type ChatStreamResult = {
   reasoningChars: number;
 };
 
+export type ToolActivity = {
+  id: string;
+  name: string;
+  status: "running" | "completed" | "failed";
+  input?: string;
+  summary?: string;
+};
+
 const MAX_TOOL_ROUNDS = 1;
 
 export async function generateAssistantReply({
@@ -33,11 +41,13 @@ export async function generateAssistantReply({
   transcript,
   signal,
   onDelta,
+  onToolActivity,
 }: {
   history: ChatMessage[];
   transcript: string;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
+  onToolActivity?: (activity: ToolActivity) => void;
 }) {
   const messages: TogetherMessage[] = [
     {
@@ -54,7 +64,7 @@ export async function generateAssistantReply({
       return await answerWithModel(model, messages, signal, (delta) => {
         emittedForModel = true;
         onDelta(delta);
-      });
+      }, onToolActivity);
     } catch (error) {
       lastError = error;
       if (signal.aborted || emittedForModel) throw error;
@@ -91,9 +101,11 @@ async function answerWithModel(
   initialMessages: TogetherMessage[],
   signal: AbortSignal,
   onDelta: (delta: string) => void,
+  onToolActivity: ((activity: ToolActivity) => void) | undefined,
 ) {
   const messages = initialMessages.map((message) => ({ ...message })) as TogetherMessage[];
   let finalContent = "";
+  let rawFinalContent = "";
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const allowTools = round < MAX_TOOL_ROUNDS && Boolean(process.env.EXA_API_KEY);
@@ -121,7 +133,11 @@ async function answerWithModel(
         content: "",
         tool_calls: [textToolCall],
       });
-      const toolResult = await runToolCall(textToolCall, signal);
+      const toolResult = await runToolCallWithActivity(
+        textToolCall,
+        signal,
+        onToolActivity,
+      );
       messages.push({
         role: "tool",
         tool_call_id: textToolCall.id,
@@ -145,7 +161,11 @@ async function answerWithModel(
     });
 
     for (const toolCall of result.toolCalls.slice(0, 2)) {
-      const toolResult = await runToolCall(toolCall, signal);
+      const toolResult = await runToolCallWithActivity(
+        toolCall,
+        signal,
+        onToolActivity,
+      );
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
@@ -157,8 +177,19 @@ async function answerWithModel(
   throw new Error("Reply model did not produce a final answer after tool use.");
 
   function emitFinalDelta(delta: string) {
-    finalContent += delta;
-    onDelta(delta);
+    rawFinalContent += delta;
+    const nextContent = stripAssistantMarkdown(rawFinalContent);
+    if (!nextContent.startsWith(finalContent)) {
+      const safeDelta = stripAssistantMarkdown(delta);
+      if (!safeDelta) return;
+      finalContent += safeDelta;
+      onDelta(safeDelta);
+      return;
+    }
+
+    const safeDelta = nextContent.slice(finalContent.length);
+    finalContent = nextContent;
+    if (safeDelta) onDelta(safeDelta);
   }
 }
 
@@ -303,6 +334,77 @@ function stripLeadingFinalMarker(delta: string, currentContent: string) {
   return delta.trim().toLowerCase() === "final" ? "" : delta;
 }
 
+async function runToolCallWithActivity(
+  toolCall: TogetherToolCall,
+  signal: AbortSignal,
+  onToolActivity: ((activity: ToolActivity) => void) | undefined,
+) {
+  const baseActivity = describeToolCall(toolCall);
+  onToolActivity?.({ ...baseActivity, status: "running" });
+
+  try {
+    const result = await runToolCall(toolCall, signal);
+    onToolActivity?.({
+      ...baseActivity,
+      status: "completed",
+      summary: summarizeToolResult(result),
+    });
+    return result;
+  } catch (error) {
+    onToolActivity?.({
+      ...baseActivity,
+      status: "failed",
+      summary: error instanceof Error ? error.message : "Tool call failed.",
+    });
+    throw error;
+  }
+}
+
+function describeToolCall(toolCall: TogetherToolCall) {
+  const args = parseToolArguments(toolCall);
+  const name = toolCall.function.name;
+  return {
+    id: toolCall.id || `${name}-${Date.now()}`,
+    name,
+    input: typeof args.query === "string" ? args.query : undefined,
+  };
+}
+
+function parseToolArguments(toolCall: TogetherToolCall) {
+  try {
+    const parsed = JSON.parse(toolCall.function.arguments || "{}");
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function summarizeToolResult(result: string) {
+  try {
+    const parsed = JSON.parse(result) as {
+      error?: unknown;
+      results?: Array<{ title?: unknown }>;
+    };
+    if (typeof parsed.error === "string" && parsed.error.trim()) {
+      return parsed.error.trim();
+    }
+    if (Array.isArray(parsed.results)) {
+      const count = parsed.results.length;
+      const firstTitle = parsed.results.find(
+        (item) => typeof item.title === "string" && item.title.trim(),
+      )?.title;
+      const resultLabel = count === 1 ? "1 result" : `${count} results`;
+      return typeof firstTitle === "string" && firstTitle.trim()
+        ? `${resultLabel}: ${firstTitle.trim()}`
+        : resultLabel;
+    }
+  } catch {}
+
+  return "Tool completed.";
+}
+
 export function extractTextToolCall(content: string): TogetherToolCall | null {
   if (!/<tool_call>|<function=/i.test(content)) return null;
 
@@ -340,4 +442,25 @@ export function stripToolMarkup(content: string) {
 
   return content
     .replace(/<\/?(?:tool_call|function|parameter)[^>]*>/gi, "");
+}
+
+export function stripAssistantMarkdown(content: string) {
+  return content
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/```[\w-]*\n?/g, "")
+    .replace(/```/g, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/~~([^~]+)~~/g, "$1")
+    .replace(/[*`~]/g, "")
+    .replace(/[\u2013\u2014]/g, ", ")
+    .replace(/\s+/g, " ")
+    .trim();
 }

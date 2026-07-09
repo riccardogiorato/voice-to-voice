@@ -1,12 +1,15 @@
 "use client";
 
 import {
+  CheckCircle2,
   Clipboard,
   Clock3,
   Cpu,
+  LoaderCircle,
   Mic,
   MicOff,
   RotateCcw,
+  Search,
   SlidersHorizontal,
   TriangleAlert,
   X,
@@ -200,42 +203,45 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
             </div>
 
             <div className="space-y-4">
-              {voice.transcriptItems.length > 0 ? (
-              <div className="conversation-stream">
-                <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-linear-to-b from-[#fdfcf9]/80 to-transparent" />
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-linear-to-t from-[#fdfcf9]/72 to-transparent" />
-                <div
-                  ref={voice.conversationScrollRef}
-                  className="conversation-scroll max-h-[240px] overflow-y-auto overscroll-contain"
-                >
-                <div className="flex min-h-[120px] flex-col justify-end gap-1.5 px-1 py-3">
-                  {voice.transcriptItems.map((turn, index) => {
-                    const pendingUser = turn.role === "user" && turn.settled === false;
-                    return (
-                      <p
-                        className={`max-w-[86%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 transition-[background-color,color,opacity,filter,transform,box-shadow] duration-300 ease-out ${
-                          pendingUser
-                            ? "self-end bg-[#d8d2df]/72 text-[#241a2d]/72 shadow-[0_0_0_1px_rgba(5,5,5,0.04),0_8px_22px_rgba(42,26,52,0.04)] backdrop-blur-xl"
-                            : turn.role === "user"
-                            ? "self-end bg-[#050505]/88 text-white backdrop-blur-xl"
-                            : "self-start bg-white/48 text-[#33253d] shadow-[0_0_0_1px_rgba(255,255,255,0.5),0_8px_22px_rgba(42,26,52,0.06)] backdrop-blur-xl"
-                        } ${turn.live ? "opacity-100" : ""}`}
-                        style={{
-                          opacity: turn.live
-                            ? 1
-                            : pendingUser
-                              ? 0.86
-                              : Math.max(0.6, 0.95 - (voice.transcriptItems.length - index - 1) * 0.1),
-                        }}
-                        key={`${turn.role}-${index}`}
-                      >
-                        {turn.text}
-                      </p>
-                    );
-                  })}
+              {voice.transcriptItems.length > 0 || voice.toolActivities.length > 0 ? (
+                <div className="conversation-stream">
+                  <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-10 bg-linear-to-b from-[#fdfcf9]/80 to-transparent" />
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-linear-to-t from-[#fdfcf9]/72 to-transparent" />
+                  <div
+                    ref={voice.conversationScrollRef}
+                    className="conversation-scroll max-h-[240px] overflow-y-auto overscroll-contain"
+                  >
+                    <div className="flex min-h-[120px] flex-col justify-end gap-1.5 px-1 py-3">
+                      {voice.transcriptItems.map((turn, index) => {
+                        const pendingUser = turn.role === "user" && turn.settled === false;
+                        return (
+                          <p
+                            className={`max-w-[86%] text-pretty rounded-[18px] px-3 py-1.5 text-sm leading-5 transition-[background-color,color,opacity,filter,transform,box-shadow] duration-300 ease-out ${
+                              pendingUser
+                                ? "self-end bg-[#d8d2df]/72 text-[#241a2d]/72 shadow-[0_0_0_1px_rgba(5,5,5,0.04),0_8px_22px_rgba(42,26,52,0.04)] backdrop-blur-xl"
+                                : turn.role === "user"
+                                  ? "self-end bg-[#050505]/88 text-white backdrop-blur-xl"
+                                  : "self-start bg-white/48 text-[#33253d] shadow-[0_0_0_1px_rgba(255,255,255,0.5),0_8px_22px_rgba(42,26,52,0.06)] backdrop-blur-xl"
+                            } ${turn.live ? "opacity-100" : ""}`}
+                            style={{
+                              opacity: turn.live
+                                ? 1
+                                : pendingUser
+                                  ? 0.86
+                                  : Math.max(0.6, 0.95 - (voice.transcriptItems.length - index - 1) * 0.1),
+                            }}
+                            key={`${turn.role}-${index}`}
+                          >
+                            {turn.text}
+                          </p>
+                        );
+                      })}
+                      {voice.toolActivities.map((activity) => (
+                        <ToolActivityRow activity={activity} key={activity.id} />
+                      ))}
+                    </div>
+                  </div>
                 </div>
-                </div>
-              </div>
               ) : null}
 
               {voice.error ? <VoiceNotice message={voice.error} /> : null}
@@ -338,6 +344,51 @@ function VoiceNotice({ message }: { message: string }) {
           <p className="text-sm font-semibold leading-5 text-[#1f1824]">{title}</p>
           <p className="mt-0.5 text-pretty text-sm leading-5 text-[#574b60]">{detail}</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ToolActivityRow({
+  activity,
+}: {
+  activity: VoiceConversation["toolActivities"][number];
+}) {
+  const isRunning = activity.status === "running";
+  const isFailed = activity.status === "failed";
+  const StatusIcon = isRunning ? LoaderCircle : isFailed ? TriangleAlert : CheckCircle2;
+  const statusLabel = isRunning
+    ? "Searching"
+    : isFailed
+      ? "Search failed"
+      : "Search complete";
+  const detail = activity.summary ?? (isRunning ? "Waiting for results" : "Web search");
+
+  return (
+    <div className="flex max-w-[92%] items-start gap-2 self-start rounded-[16px] bg-[#fff9ed]/72 px-3 py-2 text-[#3d2a17] shadow-[0_0_0_1px_rgba(252,76,2,0.12),0_8px_20px_rgba(90,43,22,0.06)] backdrop-blur-xl">
+      <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-white/72 text-[#c54718] shadow-[0_0_0_1px_rgba(252,76,2,0.1)]">
+        <Search className="size-3.5" aria-hidden />
+      </span>
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5">
+          <StatusIcon
+            className={`size-3.5 shrink-0 text-[#c54718] ${
+              isRunning ? "animate-spin" : ""
+            }`}
+            aria-hidden
+          />
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7a4b25]">
+            {statusLabel}
+          </p>
+        </div>
+        {activity.input ? (
+          <p className="mt-0.5 truncate text-xs font-medium text-[#2a1d12]">
+            {activity.input}
+          </p>
+        ) : null}
+        <p className="mt-0.5 line-clamp-2 text-xs leading-4 text-[#6c4c34]">
+          {detail}
+        </p>
       </div>
     </div>
   );

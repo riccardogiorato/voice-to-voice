@@ -78,7 +78,7 @@ export const systemPrompt =
   "You can use a fast web_search tool for current, recent, factual, or source-backed questions. " +
   "When tool results are provided, synthesize them into a short spoken answer and do not mention hidden reasoning. " +
   "Always reply in the same language as the user's latest message; if the language is unclear, default to English. " +
-  "Answer naturally in one or two short spoken sentences. Spell out numbers and abbreviations. No markdown.";
+  "Answer naturally in one or two short spoken sentences. Plain spoken text only: no markdown, bullets, bold markers, code ticks, em dashes, or formatting symbols. Spell out numbers and abbreviations.";
 
 export const transcriptRepairPrompt =
   "Rewrite speech-to-text transcripts as the most likely intended user utterance.\n" +

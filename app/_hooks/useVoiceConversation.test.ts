@@ -3,6 +3,7 @@ import {
   appendSpokenWordText,
   buildSocketCloseMessage,
   buildReceivedWordText,
+  applyToolActivity,
   applyTranscriptFinalToTurns,
   buildSpokenTextAtTime,
   buildTranscriptItems,
@@ -32,6 +33,33 @@ test("includes websocket close details in the reconnect message", () => {
   ).toBe(
     "Session ended (1011: client message handler failed). Tap the mic to reconnect.",
   );
+});
+
+test("updates tool activity rows by id", () => {
+  const running = applyToolActivity([], {
+    id: "call_search",
+    name: "web_search",
+    status: "running",
+    input: "weather in Venice",
+  });
+
+  expect(
+    applyToolActivity(running, {
+      id: "call_search",
+      name: "web_search",
+      status: "completed",
+      input: "weather in Venice",
+      summary: "1 result: Venice weather",
+    }),
+  ).toEqual([
+    {
+      id: "call_search",
+      name: "web_search",
+      status: "completed",
+      input: "weather in Venice",
+      summary: "1 result: Venice weather",
+    },
+  ]);
 });
 
 test("keeps the visible base transcript when a resumed delta has no displayable text", () => {

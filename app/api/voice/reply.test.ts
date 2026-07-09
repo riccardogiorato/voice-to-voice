@@ -3,6 +3,7 @@ import {
   buildSystemMessageContent,
   extractTextToolCall,
   generateAssistantReply,
+  stripAssistantMarkdown,
   stripToolMarkup,
 } from "./reply";
 import { setToolCallRunnerForTest } from "./tools";
@@ -87,15 +88,32 @@ test("does not stream assistant text from a tool-call planning turn", async () =
   }) as typeof fetch;
 
   const deltas: string[] = [];
+  const toolActivities: unknown[] = [];
   const reply = await generateAssistantReply({
     history: [{ role: "user", content: "Check the weather in Venice." }],
     transcript: "Check the weather in Venice.",
     signal: new AbortController().signal,
     onDelta: (delta) => deltas.push(delta),
+    onToolActivity: (activity) => toolActivities.push(activity),
   });
 
   expect(reply).toBe("Venice is mild and clear right now.");
   expect(deltas).toEqual(["Venice is mild and clear right now."]);
+  expect(toolActivities).toEqual([
+    {
+      id: "call_search",
+      name: "web_search",
+      status: "running",
+      input: "weather in Venice now",
+    },
+    {
+      id: "call_search",
+      name: "web_search",
+      status: "completed",
+      input: "weather in Venice now",
+      summary: "1 result: Venice weather",
+    },
+  ]);
   expect(togetherCalls).toBe(2);
 });
 
@@ -120,6 +138,32 @@ test("strips a leading final channel marker from reply deltas", async () => {
 
   expect(reply).toBe("The alphabet is transcribing correctly.");
   expect(deltas).toEqual(["The alphabet is transcribing correctly."]);
+});
+
+test("streams plain spoken text when the model emits markdown", async () => {
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    if (!url.includes("api.together.ai")) throw new Error(`Unexpected fetch: ${url}`);
+
+    return sseResponse([
+      { choices: [{ delta: { content: "The **" } }] },
+      { choices: [{ delta: { content: "short answer" } }] },
+      { choices: [{ delta: { content: "** is `yes`." } }] },
+    ]);
+  }) as typeof fetch;
+
+  const deltas: string[] = [];
+  const reply = await generateAssistantReply({
+    history: [{ role: "user", content: "Can I use this?" }],
+    transcript: "Can I use this?",
+    signal: new AbortController().signal,
+    onDelta: (delta) => deltas.push(delta),
+  });
+
+  expect(reply).toBe("The short answer is yes.");
+  expect(deltas.join("")).toBe("The short answer is yes.");
+  expect(deltas.join("")).not.toContain("*");
+  expect(deltas.join("")).not.toContain("`");
 });
 
 test("grounds the assistant prompt in the current date and requires search for current facts", () => {
@@ -168,6 +212,17 @@ test("removes text-form tool markup from visible assistant output", () => {
       "<tool_call><function=web_search><parameter=query>x</parameter></function></tool_call>",
     ),
   ).toBe("");
+});
+
+test("strips assistant markdown without changing plain speech", () => {
+  expect(stripAssistantMarkdown("**Yes**, use `voice mode`.")).toBe(
+    "Yes, use voice mode.",
+  );
+  expect(stripAssistantMarkdown("- first\n- second")).toBe("first second");
+  expect(stripAssistantMarkdown("[Together](https://together.ai) works.")).toBe(
+    "Together works.",
+  );
+  expect(stripAssistantMarkdown("Fast\u2014but plain.")).toBe("Fast, but plain.");
 });
 
 function sseResponse(chunks: unknown[]) {

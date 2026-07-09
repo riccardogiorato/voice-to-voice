@@ -30,6 +30,14 @@ type TranscriptItem = Turn & {
   live?: boolean;
 };
 
+export type ToolActivityItem = {
+  id: string;
+  name: string;
+  status: "running" | "completed" | "failed";
+  input?: string;
+  summary?: string;
+};
+
 type DebugEntry = {
   at: string;
   direction: "client" | "server" | "system";
@@ -70,6 +78,7 @@ type ServerEvent =
   | { type: "audio.delta"; audio: string; sampleRate: number; itemId?: string }
   | { type: "audio.done" }
   | { type: "audio.clear" }
+  | ({ type: "tool.activity" } & ToolActivityItem)
   | { type: "error"; message: string };
 
 type ClientEvent =
@@ -116,6 +125,7 @@ export function useVoiceConversation() {
   const [micActivity, setMicActivity] = useState(0);
   const [micLevel, setMicLevel] = useState(0);
   const [userSpeaking, setUserSpeaking] = useState(false);
+  const [toolActivities, setToolActivities] = useState<ToolActivityItem[]>([]);
   const [debugCopied, setDebugCopied] = useState(false);
   const [debugVersion, setDebugVersion] = useState(0);
 
@@ -175,6 +185,7 @@ export function useVoiceConversation() {
     setTurns([]);
     setPartial(null);
     setAssistantDraft("");
+    setToolActivities([]);
     setError("");
     clearDebugLog();
     if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -192,6 +203,7 @@ export function useVoiceConversation() {
       turns,
       partial,
       assistantDraft,
+      toolActivities,
       vad: {
         loaded: Boolean(tenVadRef.current),
         speechOpen: speechOpenRef.current,
@@ -375,6 +387,11 @@ export function useVoiceConversation() {
     if (event.type === "audio.clear") {
       commitInterruptedAssistantDraft();
       clearPlayback();
+      return;
+    }
+
+    if (event.type === "tool.activity") {
+      setToolActivities((current) => applyToolActivity(current, event));
       return;
     }
 
@@ -1139,7 +1156,7 @@ export function useVoiceConversation() {
   useEffect(() => {
     const el = conversationScrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [transcriptItems]);
+  }, [toolActivities, transcriptItems]);
 
   return {
     conversationScrollRef,
@@ -1153,6 +1170,7 @@ export function useVoiceConversation() {
     startConversation,
     stopConversation,
     toggleMute,
+    toolActivities,
     transcriptItems,
     turns,
     userSpeaking,
@@ -1404,6 +1422,20 @@ export function buildTranscriptItems({
   }
 
   return items.slice(-MAX_VISIBLE_TRANSCRIPT_ITEMS);
+}
+
+export function applyToolActivity(
+  current: ToolActivityItem[],
+  event: ToolActivityItem,
+) {
+  const next = current.slice();
+  const index = next.findIndex((item) => item.id === event.id);
+  if (index >= 0) {
+    next[index] = { ...next[index], ...event };
+  } else {
+    next.push(event);
+  }
+  return next.slice(-3);
 }
 
 function trimCommittedTurns(turns: Turn[]) {

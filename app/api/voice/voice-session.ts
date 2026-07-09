@@ -21,6 +21,7 @@ import {
 } from "./voice-utils";
 import { generateAssistantReply } from "./reply";
 import { repairTranscript } from "./transcript-repair";
+import type { ToolActivity } from "./reply";
 import type { ChatMessage, ClientEvent } from "./voice-utils";
 
 const TTS_DONE_AFTER_COMMIT_MS = 8_000;
@@ -537,6 +538,7 @@ export class VoiceSession {
         transcript,
         signal: controller.signal,
         onDelta: handleDelta,
+        onToolActivity: (activity) => this.sendToolActivity(activity),
       });
 
       if (sentence.trim()) this.speak(sentence);
@@ -817,6 +819,10 @@ export class VoiceSession {
   private send(type: string, payload: Record<string, unknown>) {
     if (this.stopped || this.client.readyState !== WebSocket.OPEN) return;
     this.client.send(JSON.stringify({ type, ...payload }));
+  }
+
+  private sendToolActivity(activity: ToolActivity) {
+    this.send("tool.activity", activity);
   }
 
   private failSession(message: string, error: unknown) {
