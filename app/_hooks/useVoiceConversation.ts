@@ -7,9 +7,9 @@ import {
   concatFloat32,
   createMicWorkletUrl,
   createThinkingSound,
-  float32ToBase64,
   getVoiceSocketUrl,
   loadBrowserTenVad,
+  pcm16Base64FromFloat32,
   clamp01,
   normalizeRange,
   rms,
@@ -88,7 +88,12 @@ type ClientEvent =
   | { type: "response.cancel" }
   | { type: "speech.started" }
   | { type: "audio.commit" }
-  | { type: "audio.input"; audio: string; sampleRate: number };
+  | {
+      type: "audio.input";
+      audio: string;
+      sampleRate: number;
+      format: "pcm_s16le";
+    };
 
 const BARGE_IN_VAD_THRESHOLD = 0.72;
 const BARGE_IN_LEVEL_THRESHOLD = 0.035;
@@ -719,8 +724,9 @@ export function useVoiceConversation() {
     sendClientEvent(
       {
         type: "audio.input",
-        audio: float32ToBase64(chunk),
-        sampleRate,
+        audio: pcm16Base64FromFloat32(chunk, sampleRate),
+        format: "pcm_s16le",
+        sampleRate: 16_000,
       },
       socket,
     );

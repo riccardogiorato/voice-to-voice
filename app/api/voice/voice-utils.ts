@@ -61,7 +61,12 @@ export type ClientEvent =
   | { type: "response.cancel" }
   | { type: "speech.started" }
   | { type: "audio.commit" }
-  | { type: "audio.input"; audio: string; sampleRate: number };
+  | {
+      type: "audio.input";
+      audio: string;
+      sampleRate: number;
+      format?: "float32le" | "pcm_s16le";
+    };
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";

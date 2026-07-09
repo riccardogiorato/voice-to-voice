@@ -169,6 +169,22 @@ export function float32ToBase64(input: Float32Array) {
   return bytesToBase64(bytes);
 }
 
+export function pcm16Base64FromFloat32(
+  input: Float32Array,
+  fromRate: number,
+  toRate = 16_000,
+) {
+  const pcm16 = downsampleToPcm16(input, fromRate, toRate);
+  const bytes = new Uint8Array(pcm16.length * 2);
+  const view = new DataView(bytes.buffer);
+
+  for (let i = 0; i < pcm16.length; i += 1) {
+    view.setInt16(i * 2, pcm16[i], true);
+  }
+
+  return bytesToBase64(bytes);
+}
+
 export function rms(input: Float32Array) {
   let sum = 0;
 

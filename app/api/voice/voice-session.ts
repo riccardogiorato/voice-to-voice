@@ -297,7 +297,7 @@ export class VoiceSession {
 
     if (event.type === "audio.input") {
       if (this.userSpeechActive) this.refreshSpeechIdleTimer();
-      this.forwardAudio(event.audio, event.sampleRate);
+      this.forwardAudio(event.audio, event.sampleRate, event.format);
     }
   }
 
@@ -470,17 +470,22 @@ export class VoiceSession {
     return true;
   }
 
-  private forwardAudio(base64Float32: string, sampleRate: number) {
+  private forwardAudio(
+    audio: string,
+    sampleRate: number,
+    format?: "float32le" | "pcm_s16le",
+  ) {
     if (!this.stt || this.stt.readyState !== WebSocket.OPEN) return;
 
-    const float32 = decodeFloat32(base64Float32);
-    const pcm16 = floatTo16BitPcm(resample(float32, sampleRate, 16_000));
+    const encodedAudio =
+      format === "pcm_s16le" && sampleRate === 16_000
+        ? audio
+        : encodeFloat32AsPcm16(audio, sampleRate);
+
     this.stt.send(
       JSON.stringify({
         type: "input_audio_buffer.append",
-        audio: Buffer.from(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength).toString(
-          "base64",
-        ),
+        audio: encodedAudio,
       }),
     );
   }
@@ -891,4 +896,12 @@ export class VoiceSession {
 
 function formatCloseReason(reason: string) {
   return reason.slice(0, MAX_CLOSE_REASON_LENGTH);
+}
+
+function encodeFloat32AsPcm16(base64Float32: string, sampleRate: number) {
+  const float32 = decodeFloat32(base64Float32);
+  const pcm16 = floatTo16BitPcm(resample(float32, sampleRate, 16_000));
+  return Buffer.from(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength).toString(
+    "base64",
+  );
 }
