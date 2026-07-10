@@ -187,6 +187,7 @@ test("updates language and voice before queued speech is flushed", () => {
 
   expect(tts.sent[0]).toEqual({
     type: "tts_session.updated",
+    context_id: "turn-0",
     session: { language: "it", voice: "italian calm man" },
   });
   expect(tts.sent[1]).toEqual({
@@ -194,6 +195,30 @@ test("updates language and voice before queued speech is flushed", () => {
     text: "Certo, posso aiutarti.",
     context_id: "turn-0",
   });
+});
+
+test("updates the same TTS context that receives the assistant text", () => {
+  const session = new VoiceSession(new FakeClientSocket() as any);
+  const tts = new FakeTtsSocket();
+
+  (session as any).tts = tts;
+  (session as any).ttsReady = true;
+  (session as any).ttsContextId = "turn-1";
+  (session as any).setTtsLanguage("it");
+  (session as any).speak("Ciao! Sto bene, grazie.");
+
+  expect(tts.sent).toEqual([
+    {
+      type: "tts_session.updated",
+      context_id: "turn-1",
+      session: { language: "it", voice: "italian calm man" },
+    },
+    {
+      type: "input_text_buffer.append",
+      text: "Ciao! Sto bene, grazie.",
+      context_id: "turn-1",
+    },
+  ]);
 });
 
 class FakeClientSocket {

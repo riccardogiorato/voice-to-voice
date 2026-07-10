@@ -714,6 +714,7 @@ export class VoiceSession {
     this.tts.send(
       JSON.stringify({
         type: "tts_session.updated",
+        context_id: this.ttsContextId,
         session: {
           language: this.ttsLanguage,
           voice: ttsVoiceForLanguage(config, this.ttsLanguage),
