@@ -20,7 +20,8 @@ export const WEB_SEARCH_TOOL = {
       properties: {
         query: {
           type: "string",
-          description: "A focused web search query.",
+          description:
+            "A focused web search query derived from the user's request and conversation context.",
         },
         num_results: {
           type: "integer",

@@ -55,6 +55,8 @@ export function VoicePhoneLayout({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(true);
   const canStartFromSurface = !isActive && !settingsOpen;
+  const hasFooterControls = isActive || hasTurns;
+  const hasContentBelowMessages = Boolean(error) || hasFooterControls;
 
   function handleSurfaceClick(event: MouseEvent<HTMLElement>) {
     if (!canStartFromSurface || isInteractiveTarget(event.target)) return;
@@ -98,15 +100,46 @@ export function VoicePhoneLayout({
           <VoiceStatusPill label={status.label} detail={status.detail} />
         </div>
 
-        <div className="shrink-0 space-y-4">
-          {messagesOpen ? (
-            <VoiceConversationStream
-              items={conversationItems}
-              scrollRef={conversationScrollRef}
-            />
-          ) : null}
+        <div className="shrink-0">
+          <AnimatePresence initial={false}>
+            {messagesOpen && conversationItems.length > 0 ? (
+              <motion.div
+                key="conversation-stream"
+                className="overflow-hidden"
+                initial={{ height: 0, marginBottom: 0 }}
+                animate={{
+                  height: "auto",
+                  marginBottom: hasContentBelowMessages ? 16 : 0,
+                }}
+                exit={{ height: 0, marginBottom: 0 }}
+                transition={{ duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <motion.div
+                  initial={{ opacity: 0, y: 8, scale: 0.985, filter: "blur(4px)" }}
+                  animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+                  exit={{
+                    opacity: 0,
+                    y: 6,
+                    scale: 0.99,
+                    filter: "blur(2px)",
+                    transition: { duration: 0.16, ease: "easeIn" },
+                  }}
+                  transition={{ type: "spring", duration: 0.42, bounce: 0 }}
+                >
+                  <VoiceConversationStream
+                    items={conversationItems}
+                    scrollRef={conversationScrollRef}
+                  />
+                </motion.div>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
 
-          {error ? <VoiceNotice message={error} /> : null}
+          {error ? (
+            <div className={hasFooterControls ? "mb-4" : undefined}>
+              <VoiceNotice message={error} />
+            </div>
+          ) : null}
 
           <AnimatePresence initial={false} mode="wait">
             {isActive ? (

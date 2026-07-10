@@ -118,8 +118,11 @@ export function buildSystemMessageContent(now = new Date()) {
   }).format(now);
 
   return (
-    `${systemPrompt} Today is ${spokenDate} (${isoDate}, UTC). ` +
-    "Use web_search for current or recent facts, including sports, schedules, news, and weather; don't answer those from memory."
+    `${systemPrompt} CURRENT DATE: ${spokenDate} (${isoDate}, UTC). CURRENT YEAR: ${now.getUTCFullYear()}. ` +
+    "Use web_search for current or recent facts. You must call web_search before answering questions about events, winners, sports, scores, schedules, news, weather, prices, public figures, or any fact that may have changed. " +
+    `If a question is ambiguous between historical and current information, search for the current answer in ${now.getUTCFullYear()}. ` +
+    `When the user asks about the current, latest, ongoing, or most recent event, include ${now.getUTCFullYear()} in the focused web_search query. Never substitute an older year from memory. ` +
+    "Do not answer these questions from memory. When tool results are provided, synthesize them into a short spoken answer and do not mention hidden reasoning."
   );
 }
 

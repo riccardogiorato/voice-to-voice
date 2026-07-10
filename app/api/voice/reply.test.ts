@@ -237,13 +237,18 @@ test("accepts locale tags and hides malformed language metadata", () => {
 test("grounds the assistant prompt in the current date and requires search for current facts", () => {
   const prompt = buildSystemMessageContent(new Date("2026-07-09T12:00:00.000Z"));
 
-  expect(prompt).toContain("Today is Thursday, July 9, 2026 (2026-07-09, UTC).");
+  expect(prompt).toContain(
+    "CURRENT DATE: Thursday, July 9, 2026 (2026-07-09, UTC). CURRENT YEAR: 2026.",
+  );
   expect(prompt).toContain("current or recent facts");
   expect(prompt).toContain("sports");
   expect(prompt).toContain("Use web_search");
-  expect(prompt).toContain("don't answer those from memory");
+  expect(prompt).toContain("Do not answer these questions from memory");
   expect(prompt).toContain("<lang:xx>");
   expect(prompt).toContain("Never output a closing language tag");
+  expect(prompt).toContain("You must call web_search");
+  expect(prompt).toContain("include 2026 in the focused web_search query");
+  expect(prompt).toContain("Never substitute an older year from memory");
 });
 
 test("parses text-form tool calls instead of speaking their XML", () => {

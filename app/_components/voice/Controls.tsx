@@ -1,5 +1,7 @@
+"use client";
+
 import { MessageSquareOff, MessageSquareText, Mic, MicOff, X } from "lucide-react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { cx } from "./utils";
 
@@ -139,11 +141,22 @@ export function VoiceActiveControls({
       size="md"
       tone="soft"
     >
-      {messagesOpen ? (
-        <MessageSquareText className="size-5" aria-hidden />
-      ) : (
-        <MessageSquareOff className="size-5" aria-hidden />
-      )}
+      <AnimatePresence initial={false} mode="popLayout">
+        <motion.span
+          key={messagesOpen ? "messages-shown" : "messages-hidden"}
+          className="grid size-5 place-items-center"
+          initial={{ opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+          animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+          exit={{ opacity: 0, scale: 0.25, filter: "blur(4px)" }}
+          transition={{ type: "spring", duration: 0.3, bounce: 0 }}
+        >
+          {messagesOpen ? (
+            <MessageSquareText className="size-5" aria-hidden />
+          ) : (
+            <MessageSquareOff className="size-5" aria-hidden />
+          )}
+        </motion.span>
+      </AnimatePresence>
     </VoiceIconButton>,
     <VoiceMuteButton key="microphone" muted={muted} onClick={onToggleMute} />,
     <VoiceIconButton
