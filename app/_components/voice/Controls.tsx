@@ -1,4 +1,5 @@
 import { MessageSquareOff, MessageSquareText, Mic, MicOff, X } from "lucide-react";
+import { motion } from "motion/react";
 import type { ReactNode } from "react";
 import { cx } from "./utils";
 
@@ -119,40 +120,79 @@ export function VoiceMuteButton({
 export function VoiceActiveControls({
   muted,
   messagesOpen,
+  animateEntrance = false,
   onToggleMessages,
   onToggleMute,
   onStop,
 }: {
   muted: boolean;
   messagesOpen: boolean;
+  animateEntrance?: boolean;
   onToggleMessages?: () => void;
   onToggleMute?: () => void;
   onStop?: () => void;
 }) {
+  const controls = [
+    <VoiceIconButton
+      key="messages"
+      label={messagesOpen ? "Hide messages" : "Show messages"}
+      onClick={onToggleMessages}
+      pressed={messagesOpen}
+      size="md"
+      tone="soft"
+    >
+      {messagesOpen ? (
+        <MessageSquareText className="size-5" aria-hidden />
+      ) : (
+        <MessageSquareOff className="size-5" aria-hidden />
+      )}
+    </VoiceIconButton>,
+    <VoiceMuteButton key="microphone" muted={muted} onClick={onToggleMute} />,
+    <VoiceIconButton
+      key="stop"
+      label="End conversation"
+      size="md"
+      tone="dark"
+      onClick={onStop}
+    >
+      <X className="size-5" aria-hidden />
+    </VoiceIconButton>,
+  ];
+
+  if (animateEntrance) {
+    return (
+      <motion.div
+        className="flex min-h-[64px] items-center justify-between px-1"
+        initial="hidden"
+        animate="visible"
+        variants={{
+          hidden: {},
+          visible: { transition: { delayChildren: 0.1, staggerChildren: 0.08 } },
+        }}
+      >
+        {controls.map((control) => (
+          <motion.div
+            key={control.key}
+            variants={{
+              hidden: { opacity: 0, y: 12, scale: 0.9 },
+              visible: {
+                opacity: 1,
+                y: 0,
+                scale: 1,
+                transition: { type: "spring", duration: 0.45, bounce: 0 },
+              },
+            }}
+          >
+            {control}
+          </motion.div>
+        ))}
+      </motion.div>
+    );
+  }
+
   return (
     <div className="flex min-h-[64px] items-center justify-between px-1">
-      <VoiceIconButton
-        label={messagesOpen ? "Hide messages" : "Show messages"}
-        onClick={onToggleMessages}
-        pressed={messagesOpen}
-        size="md"
-        tone="soft"
-      >
-        {messagesOpen ? (
-          <MessageSquareText className="size-5" aria-hidden />
-        ) : (
-          <MessageSquareOff className="size-5" aria-hidden />
-        )}
-      </VoiceIconButton>
-      <VoiceMuteButton muted={muted} onClick={onToggleMute} />
-      <VoiceIconButton
-        label="End conversation"
-        size="md"
-        tone="dark"
-        onClick={onStop}
-      >
-        <X className="size-5" aria-hidden />
-      </VoiceIconButton>
+      {controls}
     </div>
   );
 }

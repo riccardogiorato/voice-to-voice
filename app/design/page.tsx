@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import {
   ToolActivityRow,
   VoiceActiveControls,
-  VoiceBrandHeader,
   VoiceConversationStream,
   VoiceIconButton,
   VoiceMicMeter,
@@ -18,6 +17,7 @@ import type {
   ConversationTimelineItem,
   ToolActivityItem,
 } from "@/app/_hooks/useVoiceConversation";
+import { DesignVoicePhone } from "./DesignVoicePhone";
 
 const orbStates = [
   { label: "Idle", phase: "idle", activity: 0 },
@@ -95,24 +95,8 @@ export default function DesignPage() {
         </header>
 
         <section className="grid gap-5 lg:grid-cols-[430px_1fr]">
-          <Specimen title="Phone Shell">
-            <div className="phone-shell relative flex h-[720px] w-full flex-col overflow-hidden bg-[#fdfcf9] shadow-[0_0_0_10px_#050505,0_24px_70px_rgba(5,5,5,0.18)]">
-              <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(198,168,244,0.18),rgba(255,255,255,0)_24%),radial-gradient(circle_at_100%_5%,rgba(239,44,193,0.12),transparent_24%),radial-gradient(circle_at_0%_95%,rgba(252,76,2,0.1),transparent_28%)]" />
-              <div className="relative z-10 flex h-full flex-col px-7 pb-7 pt-7">
-                <VoiceBrandHeader />
-                <div className="flex flex-1 flex-col items-center justify-center gap-2 pb-5">
-                  <VoiceOrbButton phase="listening" activity={0.54} />
-                  <VoiceStatusPill label="Listening" detail="Live" />
-                </div>
-                <VoiceConversationStream items={conversationItems} />
-                <div className="flex flex-col gap-1 pt-4">
-                  <div className="flex justify-center">
-                    <VoiceMicMeter active level={0.64} />
-                  </div>
-                  <VoiceActiveControls muted={false} messagesOpen />
-                </div>
-              </div>
-            </div>
+          <Specimen title="Interactive Phone Flow">
+            <DesignVoicePhone />
           </Specimen>
 
           <div className="grid content-start gap-5">
