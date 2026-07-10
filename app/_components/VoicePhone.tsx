@@ -92,15 +92,13 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
               />
             ) : null}
 
-            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-5 pb-6">
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 pb-6">
               <VoiceOrbButton
                 phase={voice.phase}
                 activity={voiceActivity}
                 disabled={voice.isActive}
                 onClick={voice.startConversation}
               />
-
-              <VoiceMicMeter active={micMeterVisible} level={micLevel} />
 
               <VoiceStatusPill label={status.label} detail={status.detail} />
             </div>
@@ -116,13 +114,18 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
               {voice.error ? <VoiceNotice message={voice.error} /> : null}
 
               {voice.isActive ? (
-                <VoiceActiveControls
-                  muted={voice.muted}
-                  messagesOpen={messagesOpen}
-                  onToggleMessages={() => setMessagesOpen((open) => !open)}
-                  onToggleMute={voice.toggleMute}
-                  onStop={voice.stopConversation}
-                />
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-center">
+                    <VoiceMicMeter active={micMeterVisible} level={micLevel} />
+                  </div>
+                  <VoiceActiveControls
+                    muted={voice.muted}
+                    messagesOpen={messagesOpen}
+                    onToggleMessages={() => setMessagesOpen((open) => !open)}
+                    onToggleMute={voice.toggleMute}
+                    onStop={voice.stopConversation}
+                  />
+                </div>
               ) : voice.turns.length > 0 ? (
                 <VoiceNewConversationButton onClick={voice.resetConversation} />
               ) : null}

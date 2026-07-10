@@ -100,13 +100,17 @@ export default function DesignPage() {
               <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(198,168,244,0.18),rgba(255,255,255,0)_24%),radial-gradient(circle_at_100%_5%,rgba(239,44,193,0.12),transparent_24%),radial-gradient(circle_at_0%_95%,rgba(252,76,2,0.1),transparent_28%)]" />
               <div className="relative z-10 flex h-full flex-col px-7 pb-7 pt-7">
                 <VoiceBrandHeader />
-                <div className="flex flex-1 flex-col items-center justify-center gap-5 pb-5">
+                <div className="flex flex-1 flex-col items-center justify-center gap-2 pb-5">
                   <VoiceOrbButton phase="listening" activity={0.54} />
-                  <VoiceMicMeter active level={0.64} />
                   <VoiceStatusPill label="Listening" detail="Live" />
                 </div>
                 <VoiceConversationStream items={conversationItems} />
-                <VoiceActiveControls muted={false} messagesOpen />
+                <div className="flex flex-col gap-1 pt-4">
+                  <div className="flex justify-center">
+                    <VoiceMicMeter active level={0.64} />
+                  </div>
+                  <VoiceActiveControls muted={false} messagesOpen />
+                </div>
               </div>
             </div>
           </Specimen>

@@ -241,16 +241,6 @@ button {
   position: relative;
   min-height: 132px;
   overflow: hidden;
-  border-radius: 30px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.06)),
-    radial-gradient(circle at 16% 0%, rgba(198, 168, 244, 0.16), transparent 42%),
-    radial-gradient(circle at 92% 100%, rgba(252, 76, 2, 0.1), transparent 40%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.5),
-    0 18px 48px rgba(92, 62, 98, 0.08);
-  backdrop-filter: blur(22px);
-  mask-image: linear-gradient(to bottom, transparent 0, black 18%, black 88%, transparent 100%);
 }
 
 .conversation-scroll {
@@ -297,7 +287,7 @@ button {
   justify-content: center;
   gap: 3px;
   width: min(34vw, 132px);
-  height: 18px;
+  height: 28px;
   margin-top: 0;
   opacity: 0;
   transform: translateY(-2px) scale(0.96);
@@ -307,21 +297,21 @@ button {
 }
 
 .voice-mic-meter-active {
-  opacity: 0.72;
+  opacity: 1;
   transform: translateY(0) scale(1);
 }
 
 .voice-mic-meter span {
   --meter-gain: 0.5;
   width: 3px;
-  height: 16px;
+  height: 26px;
   border-radius: 999px;
   background:
     linear-gradient(180deg, rgba(198, 168, 244, 0.86), rgba(239, 44, 193, 0.86), rgba(252, 76, 2, 0.74)),
     rgba(5, 5, 5, 0.1);
   box-shadow: 0 4px 12px rgba(239, 44, 193, 0.14);
-  opacity: calc(0.32 + (var(--mic-level) * 0.58));
-  transform: scaleY(calc(0.14 + (var(--mic-level) * var(--meter-gain) * 0.86)));
+  opacity: calc(0.64 + (var(--mic-level) * 0.36));
+  transform: scaleY(calc(0.22 + (var(--mic-level) * var(--meter-gain) * 0.78)));
   transform-origin: 50% 50%;
   transition-property: opacity, transform;
   transition-duration: 90ms;
