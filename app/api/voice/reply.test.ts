@@ -234,21 +234,19 @@ test("accepts locale tags and hides malformed language metadata", () => {
   });
 });
 
-test("grounds the assistant prompt in the current date and requires search for current facts", () => {
-  const prompt = buildSystemMessageContent(new Date("2026-07-09T12:00:00.000Z"));
+test("grounds the assistant prompt in the current date without encouraging unnecessary search", () => {
+  const prompt = buildSystemMessageContent(new Date("2026-07-10T12:00:00.000Z"));
 
-  expect(prompt).toContain(
-    "CURRENT DATE: Thursday, July 9, 2026 (2026-07-09, UTC). CURRENT YEAR: 2026.",
-  );
-  expect(prompt).toContain("current or recent facts");
-  expect(prompt).toContain("sports");
-  expect(prompt).toContain("Use web_search");
-  expect(prompt).toContain("Do not answer these questions from memory");
+  expect(prompt).toContain("CURRENT DATE: Friday July 10, 2026 (UTC).");
+  expect(prompt).toContain("Web search rules:\n-");
+  expect(prompt).toContain("Search for current facts or explicit lookup");
+  expect(prompt).toContain("Always search: news, live or recent sports");
+  expect(prompt).toContain("Do not search: casual or creative requests");
+  expect(prompt).toContain("your identity or capabilities");
   expect(prompt).toContain("<lang:xx>");
   expect(prompt).toContain("Never output a closing language tag");
-  expect(prompt).toContain("You must call web_search");
-  expect(prompt).toContain("include 2026 in the focused web_search query");
-  expect(prompt).toContain("Never substitute an older year from memory");
+  expect(prompt).toContain("include 2026 in the query");
+  expect(prompt).toContain("Never use an older year from memory");
 });
 
 test("parses text-form tool calls instead of speaking their XML", () => {
