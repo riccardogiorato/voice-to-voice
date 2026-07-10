@@ -95,7 +95,7 @@ For a production URL:
 vercel deploy --prod
 ```
 
-This uses Vercel's `experimental_upgradeWebSocket()` API for Next.js App Router. WebSockets require Fluid Compute and are governed by Vercel Function max duration, so the route exports `maxDuration = 300`.
+This uses Vercel's `experimental_upgradeWebSocket()` API for Next.js App Router. WebSockets require Fluid Compute and are governed by Vercel Function max duration. The route exports `maxDuration = 660`, while the app ends calls cleanly after 10 minutes to leave a 60-second shutdown buffer.
 
 ### Why the function region is pinned to `iad1`
 

@@ -225,6 +225,25 @@ test("updates the same TTS context that receives the assistant text", () => {
   ]);
 });
 
+test("reapplies the same language and voice to each new TTS context", () => {
+  const session = new VoiceSession(new FakeClientSocket() as any);
+  const tts = new FakeTtsSocket();
+
+  (session as any).tts = tts;
+  (session as any).ttsReady = true;
+  (session as any).ttsLanguage = "it";
+  (session as any).ttsContextId = "turn-3";
+  (session as any).setTtsLanguage("it");
+
+  expect(tts.sent).toEqual([
+    {
+      type: "tts_session.updated",
+      context_id: "turn-3",
+      session: { language: "it", voice: "italian calm man" },
+    },
+  ]);
+});
+
 class FakeClientSocket {
   readyState = 1;
   sent: unknown[] = [];

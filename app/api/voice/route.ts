@@ -3,7 +3,7 @@ import { VoiceSession } from "./voice-session";
 import { isAllowedOrigin } from "./voice-utils";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 660;
 const VOICE_SOCKET_MAX_PAYLOAD_BYTES = 1024 * 1024;
 
 export async function GET(request: Request) {

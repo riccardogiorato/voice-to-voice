@@ -95,7 +95,7 @@ export class VoiceSession {
       if (this.tts?.readyState === WebSocket.OPEN) this.tts.ping();
     }, 15_000);
 
-    // End 20s before Vercel's maxDuration (300s) hard-kills the function, so
+    // End 60s before Vercel's maxDuration (660s) hard-kills the function, so
     // the client hears why instead of a silent drop.
     this.expiryTimer = setTimeout(() => {
       this.send("error", {
@@ -103,7 +103,7 @@ export class VoiceSession {
       });
       this.send("state", { state: "idle" });
       this.close("call time limit reached", 1000);
-    }, 280_000);
+    }, 600_000);
 
     this.connectStt();
     this.connectTts();
@@ -510,6 +510,10 @@ export class VoiceSession {
     this.turnCount += 1;
     this.ttsContextId = `turn-${this.turnCount}`;
     this.answerAudioStarted = false;
+    // TTS settings are scoped per context. Apply the current profile even
+    // before the model emits its language tag so a missing tag preserves the
+    // previous turn's confirmed language instead of inheriting socket English.
+    this.updateTtsSession();
 
     this.history.push({ role: "user", content: transcript });
     this.trimHistory();
@@ -702,7 +706,6 @@ export class VoiceSession {
   }
 
   private setTtsLanguage(language: string) {
-    if (language === this.ttsLanguage) return;
     this.ttsLanguage = language;
     this.updateTtsSession();
   }
