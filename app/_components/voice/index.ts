@@ -1,9 +1,9 @@
 export { VoiceBrandHeader } from "./BrandHeader";
 export {
   VoiceActiveControls,
+  VoiceEndedControls,
   VoiceIconButton,
   VoiceMuteButton,
-  VoiceNewConversationButton,
 } from "./Controls";
 export { VoiceConversationStream } from "./ConversationStream";
 export { VoiceMicMeter } from "./Meters";

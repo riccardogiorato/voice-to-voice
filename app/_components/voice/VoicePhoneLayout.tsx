@@ -3,7 +3,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useState, type MouseEvent, type Ref } from "react";
 import type { ConversationTimelineItem } from "@/app/_hooks/useVoiceConversation";
-import { VoiceActiveControls, VoiceNewConversationButton } from "./Controls";
+import { VoiceActiveControls, VoiceEndedControls } from "./Controls";
 import { VoiceConversationStream } from "./ConversationStream";
 import { VoiceBrandHeader } from "./BrandHeader";
 import { VoiceMicMeter } from "./Meters";
@@ -27,9 +27,9 @@ export type VoicePhoneLayoutProps = {
   debugCopied?: boolean;
   embedded?: boolean;
   onStart?: () => void | Promise<void>;
+  onStartNew?: () => void | Promise<void>;
   onToggleMute?: () => void;
   onStop?: () => void;
-  onReset?: () => void;
   onCopyDebugLog?: () => void;
 };
 
@@ -47,9 +47,9 @@ export function VoicePhoneLayout({
   debugCopied,
   embedded = false,
   onStart,
+  onStartNew,
   onToggleMute,
   onStop,
-  onReset,
   onCopyDebugLog,
 }: VoicePhoneLayoutProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -177,13 +177,13 @@ export function VoicePhoneLayout({
               </motion.div>
             ) : hasTurns ? (
               <motion.div
-                key="new-conversation"
+                key="ended-controls"
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 6 }}
                 transition={{ type: "spring", duration: 0.3, bounce: 0 }}
               >
-                <VoiceNewConversationButton onClick={onReset} />
+                <VoiceEndedControls onResume={onStart} onNew={onStartNew} />
               </motion.div>
             ) : null}
           </AnimatePresence>

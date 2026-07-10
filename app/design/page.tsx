@@ -3,10 +3,10 @@ import type { ReactNode } from "react";
 import {
   ToolActivityRow,
   VoiceActiveControls,
+  VoiceEndedControls,
   VoiceConversationStream,
   VoiceIconButton,
   VoiceMicMeter,
-  VoiceNewConversationButton,
   VoiceNotice,
   VoiceOrbButton,
   VoiceSettingsPanel,
@@ -177,7 +177,7 @@ export default function DesignPage() {
                 <div className="flex flex-col gap-5">
                   <VoiceActiveControls muted={false} messagesOpen />
                   <VoiceActiveControls muted messagesOpen={false} />
-                  <VoiceNewConversationButton />
+                  <VoiceEndedControls />
                   <div className="flex items-center gap-4">
                     <VoiceIconButton label="Settings" size="md">
                       <SlidersHorizontal className="size-4" aria-hidden />

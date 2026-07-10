@@ -304,9 +304,17 @@ export function useVoiceConversation() {
     return turnsRef.current.length + (partialRef.current ? 1 : 0);
   }
 
-
   async function startConversation() {
-    if (isActive) return;
+    await startConversationWithHistory(turnsRef.current);
+  }
+
+  async function startNewConversation() {
+    resetConversation();
+    await startConversationWithHistory([]);
+  }
+
+  async function startConversationWithHistory(history: Turn[]) {
+    if (phaseRef.current !== "idle") return;
 
     clearDebugLog();
     setError("");
@@ -339,7 +347,7 @@ export function useVoiceConversation() {
 
       socket.onopen = async () => {
         appendDebug("system", "socket.open", { url: getVoiceSocketUrl() });
-        sendClientEvent({ type: "conversation.start", history: turns });
+        sendClientEvent({ type: "conversation.start", history });
         try {
           await wireMicrophone(audioContext, stream, socket);
         } catch (reason) {
@@ -1342,6 +1350,7 @@ export function useVoiceConversation() {
     phase,
     resetConversation,
     startConversation,
+    startNewConversation,
     stopConversation,
     toggleMute,
     toolActivities,

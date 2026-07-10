@@ -113,6 +113,27 @@ const flow = [
     ],
     duration: 0,
   },
+  {
+    name: "Call ended",
+    phase: "idle" as const,
+    status: { label: "Call ended", detail: "Resume or start new" },
+    activity: 0,
+    micLevel: 0,
+    items: [
+      {
+        type: "turn" as const,
+        role: "user" as const,
+        text: "What will the weather be like in Venice tomorrow?",
+      },
+      completedSearch,
+      {
+        type: "turn" as const,
+        role: "assistant" as const,
+        text: "Tomorrow looks mild and cloudy, with a light breeze near the lagoon.",
+      },
+    ],
+    duration: 0,
+  },
 ];
 
 export function DesignVoicePhone() {
@@ -173,7 +194,7 @@ export function DesignVoicePhone() {
       <VoicePhoneLayout
         embedded
         phase={current.phase}
-        isActive={step > 0}
+        isActive={current.phase !== "idle"}
         muted={false}
         activity={current.activity}
         micLevel={current.micLevel}
@@ -181,9 +202,9 @@ export function DesignVoicePhone() {
         conversationItems={current.items}
         hasTurns={current.items.length > 0}
         onStart={play}
+        onStartNew={() => selectStep(0)}
         onToggleMute={() => undefined}
-        onStop={() => selectStep(0)}
-        onReset={() => selectStep(0)}
+        onStop={() => selectStep(flow.length - 1)}
       />
     </div>
   );

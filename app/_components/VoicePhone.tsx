@@ -30,7 +30,9 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
   const status =
     voice.muted && voice.isActive
       ? { label: "Muted", detail: "Tap the mic to resume" }
-      : phaseCopy[voice.phase];
+      : !voice.isActive && voice.turns.length > 0
+        ? { label: "Call ended", detail: "Resume or start new" }
+        : phaseCopy[voice.phase];
   const waveformVisible = voice.userSpeaking && !voice.muted;
   const micMeterVisible = voice.isActive && !voice.muted;
   const voiceActivity =
@@ -58,9 +60,9 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
           hasTurns={voice.turns.length > 0}
           debugCopied={voice.debugCopied}
           onStart={voice.startConversation}
+          onStartNew={voice.startNewConversation}
           onToggleMute={voice.toggleMute}
           onStop={voice.stopConversation}
-          onReset={voice.resetConversation}
           onCopyDebugLog={voice.copyDebugLog}
         />
       </div>

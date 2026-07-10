@@ -1,6 +1,14 @@
 "use client";
 
-import { MessageSquareOff, MessageSquareText, Mic, MicOff, X } from "lucide-react";
+import {
+  MessageSquareOff,
+  MessageSquareText,
+  Mic,
+  MicOff,
+  Play,
+  Plus,
+  X,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { cx } from "./utils";
@@ -208,15 +216,30 @@ export function VoiceActiveControls({
   );
 }
 
-export function VoiceNewConversationButton({ onClick }: { onClick?: () => void }) {
+export function VoiceEndedControls({
+  onResume,
+  onNew,
+}: {
+  onResume?: () => void;
+  onNew?: () => void;
+}) {
   return (
-    <div className="flex min-h-[64px] items-center justify-between px-1">
+    <div className="grid min-h-[64px] grid-cols-2 items-center gap-3 px-1">
       <button
-        className="mx-auto rounded-full bg-white/70 px-4 py-2 text-sm font-medium text-[#050505]/60 shadow-[0_0_0_1px_rgba(5,5,5,0.06)] transition-[box-shadow,scale,color] duration-150 hover:text-[#050505]/85 hover:shadow-[0_0_0_1px_rgba(5,5,5,0.1)] active:scale-[0.96]"
+        className="flex min-h-12 items-center justify-center gap-2 rounded-full bg-[linear-gradient(145deg,#c6a8f4_0%,#ef2cc1_54%,#fc4c02_100%)] px-4 py-3 text-sm font-semibold text-white transition-[filter,scale] duration-150 hover:brightness-[1.04] active:scale-[0.96]"
         type="button"
-        onClick={onClick}
+        onClick={onResume}
       >
-        New conversation
+        <Play className="size-4 fill-current" aria-hidden />
+        Resume chat
+      </button>
+      <button
+        className="flex min-h-12 items-center justify-center gap-2 rounded-full bg-white/74 px-4 py-3 text-sm font-semibold text-[#5f5268] shadow-[0_0_0_1px_rgba(5,5,5,0.06),0_6px_16px_rgba(65,42,78,0.06)] transition-[box-shadow,scale,color] duration-150 hover:text-[#3f294d] hover:shadow-[0_0_0_1px_rgba(127,79,172,0.14),0_8px_20px_rgba(65,42,78,0.09)] active:scale-[0.96]"
+        type="button"
+        onClick={onNew}
+      >
+        <Plus className="size-4" aria-hidden />
+        New chat
       </button>
     </div>
   );
