@@ -1,9 +1,17 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef } from "react";
+import { memo, useCallback, useEffect, useRef, type CSSProperties } from "react";
 import type { VoiceOrbPhase } from "./types";
 
 type ShaderOrbState = "idle" | "connecting" | "listening" | "speaking" | "muted";
+
+const SHADER_STATE_INDEX: Record<ShaderOrbState, number> = {
+  idle: 0,
+  connecting: 1,
+  listening: 2,
+  speaking: 3,
+  muted: 4,
+};
 
 const TOGETHER_COLORS: [number, number, number][] = [
   [0.78, 0.66, 0.96],
@@ -27,7 +35,7 @@ const STATE_PARAMS: Record<ShaderOrbState, OrbParams> = {
     glow: 0.2,
     brightness: 0.98,
     pulse: 0,
-    saturation: 0.78,
+    saturation: 0.2,
   },
   connecting: {
     speed: 0.34,
@@ -35,20 +43,22 @@ const STATE_PARAMS: Record<ShaderOrbState, OrbParams> = {
     glow: 0.38,
     brightness: 0.75,
     pulse: 1,
-    saturation: 0.9,
+    saturation: 0.46,
   },
   listening: {
-    speed: 0.28,
-    amplitude: 0.095,
+    // Listening is a stable state. The speaking animation is the signal that
+    // the assistant is actively talking, so don't make mic noise move the orb.
+    speed: 0,
+    amplitude: 0.045,
     glow: 0.44,
     brightness: 0.85,
     pulse: 0,
-    saturation: 1,
+    saturation: 0.84,
   },
   speaking: {
-    speed: 0.82,
-    amplitude: 0.24,
-    glow: 0.72,
+    speed: 0.96,
+    amplitude: 0.34,
+    glow: 0.8,
     brightness: 1,
     pulse: 0,
     saturation: 1,
@@ -84,6 +94,7 @@ uniform float u_glow;
 uniform float u_brightness;
 uniform float u_pulse;
 uniform float u_saturation;
+uniform float u_state;
 uniform vec3 u_color0;
 uniform vec3 u_color1;
 uniform vec3 u_color2;
@@ -137,60 +148,82 @@ float snoise(vec3 v) {
 void main() {
   vec2 uv = v_uv * 2.0 - 1.0;
   float dist = length(uv);
+  float angle = atan(uv.y, uv.x);
   float t = u_time * u_speed;
 
+  float isIdle = 1.0 - step(0.5, abs(u_state - 0.0));
+  float isConnecting = 1.0 - step(0.5, abs(u_state - 1.0));
+  float isListening = 1.0 - step(0.5, abs(u_state - 2.0));
+  float isSpeaking = 1.0 - step(0.5, abs(u_state - 3.0));
+  float isMuted = 1.0 - step(0.5, abs(u_state - 4.0));
+
   float radius = 0.62;
-  float circle = 1.0 - smoothstep(radius - 0.014, radius + 0.002, dist);
+  // Treat the orb as a liquid contour rather than a filled gradient sphere.
+  // The broad wave makes the ring drift like ink; the finer wave breaks up
+  // its edge into the soft, imperfect silhouette of a fluid drawing.
+  float broadWave = snoise(vec3(uv * 2.8 + 4.0, t * 0.55));
+  float fineWave = snoise(vec3(uv * 8.0 - 8.0, t * 0.35));
+  // Keep the silhouette unmistakably circular; the liquid character should
+  // live in the edge density and small ripples, not in a melted outline.
+  float waveAmount = 0.012 + u_amplitude * 0.08;
+  float liquidWave = broadWave * waveAmount + fineWave * waveAmount * 0.22;
+  float colorPresence = smoothstep(0.12, 0.95, u_saturation);
+  float pulse = u_pulse * sin(u_time * 3.5) * 0.012;
+  float liquidRadius = radius + liquidWave + pulse;
+  float ringDistance = abs(dist - liquidRadius);
+  // Each phase has a distinct weight: listening is a confident single mark,
+  // while speaking becomes the heaviest, most energetic contour.
+  float ringWidth =
+    isIdle * 0.025 +
+    isConnecting * 0.032 +
+    isListening * 0.046 +
+    isSpeaking * 0.07 +
+    isMuted * 0.024;
+  float ringCore = 1.0 - smoothstep(0.008, ringWidth, ringDistance);
+  float ringMist = exp(-ringDistance * 38.0);
 
-  if (circle < 0.001) {
-    float glowDist = dist - radius;
-    float glow = exp(-glowDist * 18.0) * u_glow * 0.08;
-    vec3 glowColor = mix(u_color0, u_color1, 0.5);
-    fragColor = vec4(glowColor * glow, glow);
-    return;
-  }
+  // Connecting/thinking borrows the concentric scanning rings from the
+  // reference sequence. Listening and speaking remain single-circle states.
+  float ripple1 = 1.0 - smoothstep(0.006, 0.018, abs(dist - (radius - 0.105 + pulse * 1.8)));
+  float ripple2 = 1.0 - smoothstep(0.006, 0.017, abs(dist - (radius - 0.205 + pulse * 1.2)));
+  float ripple3 = 1.0 - smoothstep(0.006, 0.016, abs(dist - (radius - 0.295 + pulse * 0.7)));
+  float rippleInk = (ripple1 * 0.7 + ripple2 * 0.5 + ripple3 * 0.32) * isConnecting;
 
-  float n1 = snoise(vec3(uv * 2.0, t * 0.6)) * 0.5 + 0.5;
-  float n2 = snoise(vec3(uv * 3.5 + 7.0, t * 0.9)) * 0.5 + 0.5;
-  float n3 = snoise(vec3(uv * 1.5 - 3.0, t * 0.4 + 10.0)) * 0.5 + 0.5;
+  // Uneven density keeps the contour from reading as a perfect vector ring.
+  float inkGrain = snoise(vec3(uv * 13.0 + 2.0, t * 0.28)) * 0.5 + 0.5;
+  float inkDensity = 0.58 + inkGrain * 0.42;
 
-  vec2 distort = vec2(
-    snoise(vec3(uv * 2.0 + 5.0, t * 0.7)),
-    snoise(vec3(uv * 2.0 + 15.0, t * 0.7))
-  ) * u_amplitude * 2.0;
-  float n4 = snoise(vec3((uv + distort) * 3.0, t * 0.5)) * 0.5 + 0.5;
+  // Speaking carries a dense patch of ink around the ring, like the advancing
+  // dark mass in the reference, but it remains recognizably circular.
+  float tendrilNoise = snoise(vec3(uv * 5.0 - 13.0, t * 0.22)) * 0.5 + 0.5;
+  float sweep = snoise(vec3(cos(angle) * 1.4, sin(angle) * 1.4, t * 0.42)) * 0.5 + 0.5;
+  float speechMass = smoothstep(0.48, 0.82, sweep) * isSpeaking;
+  float tendrils = smoothstep(0.62, 0.9, tendrilNoise) * u_amplitude * 0.28 * isSpeaking;
+  float outerInk = exp(-max(dist - liquidRadius, 0.0) * 28.0) * tendrils;
 
-  vec3 col = mix(u_color0, u_color1, n1);
-  col = mix(col, u_color2, n2 * 0.5);
-  col = mix(col, u_color1 * 1.3, n4 * 0.4);
+  float colorFlow = sin(angle + t * 0.4) * 0.5 + 0.5;
+  vec3 togetherColor = mix(u_color0, u_color1, 0.25 + colorFlow * 0.68);
+  togetherColor = mix(togetherColor, u_color2, smoothstep(0.58, 0.96, colorFlow) * 0.72);
+  vec3 inkColor = mix(vec3(0.025, 0.02, 0.04), togetherColor, colorPresence * 0.86);
+  vec3 color = inkColor * (0.76 + ringCore * 0.34) * u_brightness;
+  color += mix(u_color1, vec3(1.0), 0.35) * ringMist * u_amplitude * 0.2;
+  color += togetherColor * (rippleInk * 0.34 + speechMass * ringMist * 0.28);
 
-  float vein = pow(n3, 3.0) * u_amplitude * 6.0;
-  col += vein * mix(u_color1, vec3(1.0), 0.3);
+  float innerHaze = (1.0 - smoothstep(0.0, radius, dist)) * (0.018 + u_glow * 0.025);
+  float ringOpacity =
+    isIdle * 0.3 +
+    isConnecting * 0.58 +
+    isListening * 0.86 +
+    isSpeaking * 1.0 +
+    isMuted * 0.22;
+  float alpha = max(
+    ringCore * inkDensity * ringOpacity,
+    ringMist * (0.06 + speechMass * 0.2) + outerInk * 0.3
+  );
+  alpha = max(alpha, rippleInk * (0.2 + inkDensity * 0.28));
+  alpha += innerHaze;
 
-  float centerDist = dist / radius;
-  float depthShade = 1.0 - centerDist * centerDist * 0.24;
-  col *= depthShade;
-
-  float rim = pow(centerDist, 4.0) * 0.18;
-  col += rim * u_color0;
-
-  vec2 lightPos = vec2(-0.15, -0.18);
-  float specDist = length(uv - lightPos);
-  float spec = exp(-specDist * specDist * 30.0) * 0.48;
-  col += spec * vec3(1.0);
-
-  vec2 lightPos2 = vec2(0.2, 0.25);
-  float spec2 = exp(-length(uv - lightPos2) * 8.0) * 0.15;
-  col += spec2 * u_color1;
-
-  float pulseFactor = 1.0 + u_pulse * sin(u_time * 3.5) * 0.35;
-
-  float lum = dot(col, vec3(0.299, 0.587, 0.114));
-  col = mix(vec3(lum), col, u_saturation);
-
-  col *= u_brightness * pulseFactor;
-
-  fragColor = vec4(col, circle);
+  fragColor = vec4(color, min(alpha, 0.94));
 }`;
 
 function createShader(gl: WebGL2RenderingContext, type: number, source: string) {
@@ -246,6 +279,7 @@ function initWebGL(canvas: HTMLCanvasElement) {
       u_brightness: gl.getUniformLocation(program, "u_brightness"),
       u_pulse: gl.getUniformLocation(program, "u_pulse"),
       u_saturation: gl.getUniformLocation(program, "u_saturation"),
+      u_state: gl.getUniformLocation(program, "u_state"),
       u_color0: gl.getUniformLocation(program, "u_color0"),
       u_color1: gl.getUniformLocation(program, "u_color1"),
       u_color2: gl.getUniformLocation(program, "u_color2"),
@@ -276,10 +310,12 @@ export const VoiceShaderOrb = memo(function VoiceShaderOrb({
   const startedAtRef = useRef(0);
   const activityRef = useRef(0);
   const currentActivityRef = useRef(0);
+  const stateRef = useRef(state);
   const currentParams = useRef({ ...STATE_PARAMS.idle });
   const targetParams = useRef({ ...STATE_PARAMS.idle });
 
   activityRef.current = activity;
+  stateRef.current = state;
 
   useEffect(() => {
     targetParams.current = { ...STATE_PARAMS[state] };
@@ -313,7 +349,11 @@ export const VoiceShaderOrb = memo(function VoiceShaderOrb({
     }
 
     const elapsed = (performance.now() - startedAtRef.current) / 1000;
-    const volume = currentActivityRef.current;
+    // Activity is meaningful for the assistant's audio only. Keeping it out
+    // of the listening state prevents the orb from flickering as the user
+    // talks, which makes the speaking state much easier to recognize.
+    const currentState = stateRef.current;
+    const volume = currentState === "speaking" ? currentActivityRef.current : 0;
 
     gl.viewport(0, 0, width, height);
     gl.clearColor(0, 0, 0, 0);
@@ -325,6 +365,7 @@ export const VoiceShaderOrb = memo(function VoiceShaderOrb({
     gl.uniform1f(uniforms.u_brightness, current.brightness);
     gl.uniform1f(uniforms.u_pulse, current.pulse);
     gl.uniform1f(uniforms.u_saturation, current.saturation);
+    gl.uniform1f(uniforms.u_state, SHADER_STATE_INDEX[currentState]);
     gl.uniform3fv(uniforms.u_color0, TOGETHER_COLORS[0]);
     gl.uniform3fv(uniforms.u_color1, TOGETHER_COLORS[1]);
     gl.uniform3fv(uniforms.u_color2, TOGETHER_COLORS[2]);
@@ -352,5 +393,15 @@ export const VoiceShaderOrb = memo(function VoiceShaderOrb({
     };
   }, [render]);
 
-  return <canvas ref={canvasRef} className="voice-shader-orb" data-state={state} aria-hidden />;
+  const normalizedActivity = Math.min(Math.max(activity, 0), 1);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="voice-shader-orb"
+      data-state={state}
+      style={{ "--voice-activity": normalizedActivity } as CSSProperties}
+      aria-hidden
+    />
+  );
 });

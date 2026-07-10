@@ -298,9 +298,18 @@ button {
 }
 
 .voice-shader-orb {
+  --voice-activity: 0;
   display: block;
   width: var(--voice-orb-size);
   height: var(--voice-orb-size);
+  transition-property: scale;
+  transition-duration: 140ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.voice-shader-orb[data-state="listening"] {
+  /* The orb contracts into the user's voice instead of flickering with it. */
+  scale: calc(1 - (var(--voice-activity) * 0.12));
 }
 
 .voice-mic-meter {

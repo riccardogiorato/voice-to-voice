@@ -1,5 +1,5 @@
 import type { VoiceOrbPhase } from "./types";
-import { VoiceShaderOrb } from "./VoiceShaderOrb";
+import { RiemannTukeyVoiceOrb } from "@/app/orbs/RehoboamOrbLab";
 
 export function VoiceOrbButton({
   phase,
@@ -21,7 +21,7 @@ export function VoiceOrbButton({
       aria-label="Start voice chat"
       title={disabled ? undefined : "Start voice chat"}
     >
-      <VoiceShaderOrb phase={phase} activity={activity} />
+      <RiemannTukeyVoiceOrb phase={phase} activity={activity} />
     </button>
   );
 }
