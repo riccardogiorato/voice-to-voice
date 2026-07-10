@@ -84,6 +84,17 @@ type ServerEvent =
   | { type: "audio.done" }
   | { type: "audio.clear" }
   | ({ type: "tool.activity" } & ToolActivityItem)
+  | {
+      type: "reply.debug";
+      model: string;
+      attempt: number;
+      kind: "stream.chunk" | "stream.done";
+      rawContent?: string;
+      reasoningChars?: number;
+      toolCallDeltas?: unknown[];
+      finishReason?: string | null;
+      usage?: unknown;
+    }
   | { type: "error"; message: string };
 
 type ClientEvent =
@@ -381,6 +392,7 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "transcript.final") {
+      setError("");
       updatePartial(null);
       updateTurns((current) => applyTranscriptFinalToTurns(current, event));
       if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
@@ -406,6 +418,7 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "assistant.delta") {
+      setError("");
       scheduleSpeakingWatchdog();
       assistantGeneratedTextRef.current += event.text;
       return;
@@ -439,6 +452,8 @@ export function useVoiceConversation() {
       setToolActivities((current) => applyToolActivity(current, event, anchorTurnCount));
       return;
     }
+
+    if (event.type === "reply.debug") return;
 
     if (event.type === "error") {
       setError(event.message);

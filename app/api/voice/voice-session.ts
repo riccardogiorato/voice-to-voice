@@ -10,7 +10,6 @@ import {
   REPLY_GRACE_INCOMPLETE_MS,
   REPLY_GRACE_MS,
   resample,
-  detectSpokenLanguage,
   transcriptLooksComplete,
   shouldFlushFirstTtsChunk,
   STT_MODELS,
@@ -18,6 +17,7 @@ import {
   TRANSCRIPT_REPAIR_MODEL,
   TRANSCRIPT_REPAIR_TIMEOUT_MS,
   TTS_MODELS,
+  ttsVoiceForLanguage,
   wordChangeRatio,
 } from "./voice-utils";
 import { generateAssistantReply } from "./reply";
@@ -149,9 +149,10 @@ export class VoiceSession {
 
   private connectTts() {
     const config = TTS_MODELS[this.ttsModelIndex] ?? TTS_MODELS[0];
+    const voice = ttsVoiceForLanguage(config, this.ttsLanguage);
     const url = new URL("wss://api.together.ai/v1/audio/speech/websocket");
     url.searchParams.set("model", config.model);
-    url.searchParams.set("voice", config.voice);
+    url.searchParams.set("voice", voice);
     url.searchParams.set("response_format", "pcm");
     url.searchParams.set("sample_rate", "24000");
     url.searchParams.set("segment", "immediate");
@@ -165,13 +166,13 @@ export class VoiceSession {
     });
 
     this.tts.on("open", () => {
-      this.log("tts.open", { model: config.model, voice: config.voice });
+      this.log("tts.open", { model: config.model, voice, language: this.ttsLanguage });
     });
     this.tts.on("message", (data) => this.handleTtsMessageSafely(data));
     this.tts.on("error", (error) => {
       this.logError("tts.error", error, {
         model: config.model,
-        voice: config.voice,
+        voice,
       });
     });
     this.tts.on("close", (code, reason) => {
@@ -179,7 +180,7 @@ export class VoiceSession {
         code,
         reason: reason.toString(),
         model: config.model,
-        voice: config.voice,
+        voice,
       });
       if (this.stopped) return;
       this.ttsReady = false;
@@ -382,6 +383,9 @@ export class VoiceSession {
 
     if (message.type === "session.created") {
       this.ttsReady = true;
+      // The reply language may have changed while the socket was connecting.
+      // Apply the latest profile before releasing any queued text.
+      this.updateTtsSession();
       this.flushSpeech();
       return;
     }
@@ -506,7 +510,6 @@ export class VoiceSession {
     this.turnCount += 1;
     this.ttsContextId = `turn-${this.turnCount}`;
     this.answerAudioStarted = false;
-    this.syncTtsLanguage(transcript);
 
     this.history.push({ role: "user", content: transcript });
     this.trimHistory();
@@ -548,7 +551,9 @@ export class VoiceSession {
         transcript,
         signal: controller.signal,
         onDelta: handleDelta,
+        onLanguage: (language) => this.setTtsLanguage(language),
         onToolActivity: (activity) => this.sendToolActivity(activity),
+        onDebug: (event) => this.send("reply.debug", event),
       });
 
       if (sentence.trim()) this.speak(sentence);
@@ -696,23 +701,25 @@ export class VoiceSession {
     this.trimHistory();
   }
 
-  // The prompt makes the assistant reply in the user's language, so the
-  // transcript is a reliable early signal for what TTS is about to speak.
-  // Cartesia needs the language hint or non-English replies get English
-  // phonemes. Unsure detections keep the current language.
-  private syncTtsLanguage(transcript: string) {
-    const detected = detectSpokenLanguage(transcript);
-    if (!detected || detected === this.ttsLanguage) return;
+  private setTtsLanguage(language: string) {
+    if (language === this.ttsLanguage) return;
+    this.ttsLanguage = language;
+    this.updateTtsSession();
+  }
 
-    this.ttsLanguage = detected;
-    if (this.tts && this.ttsReady && this.tts.readyState === WebSocket.OPEN) {
-      this.tts.send(
-        JSON.stringify({
-          type: "tts_session.updated",
-          session: { language: detected },
-        }),
-      );
-    }
+  private updateTtsSession() {
+    if (!this.ttsReady || !this.tts || this.tts.readyState !== WebSocket.OPEN) return;
+
+    const config = TTS_MODELS[this.ttsModelIndex] ?? TTS_MODELS[0];
+    this.tts.send(
+      JSON.stringify({
+        type: "tts_session.updated",
+        session: {
+          language: this.ttsLanguage,
+          voice: ttsVoiceForLanguage(config, this.ttsLanguage),
+        },
+      }),
+    );
   }
 
   private speak(text: string) {

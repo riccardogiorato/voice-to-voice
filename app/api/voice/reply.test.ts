@@ -3,6 +3,7 @@ import {
   buildSystemMessageContent,
   extractTextToolCall,
   generateAssistantReply,
+  parseReplyLanguagePrefix,
   stripAssistantMarkdown,
   stripToolMarkup,
 } from "./reply";
@@ -166,6 +167,41 @@ test("streams plain spoken text when the model emits markdown", async () => {
   expect(deltas.join("")).not.toContain("`");
 });
 
+test("extracts a split model language tag before streaming spoken text", async () => {
+  process.env.EXA_API_KEY = "";
+  globalThis.fetch = (async (_input) =>
+    sseResponse([
+      { choices: [{ delta: { content: "<la" } }] },
+      { choices: [{ delta: { content: "ng:it>" } }] },
+      { choices: [{ delta: { content: "Certo, posso aiutarti." } }] },
+    ])) as typeof fetch;
+
+  const events: string[] = [];
+  const reply = await generateAssistantReply({
+    history: [{ role: "user", content: "Puoi aiutarmi?" }],
+    transcript: "Puoi aiutarmi?",
+    signal: new AbortController().signal,
+    onLanguage: (language) => events.push(`language:${language}`),
+    onDelta: (delta) => events.push(`text:${delta}`),
+  });
+
+  expect(reply).toBe("Certo, posso aiutarti.");
+  expect(events).toEqual(["language:it", "text:Certo, posso aiutarti."]);
+});
+
+test("accepts locale tags and hides malformed language metadata", () => {
+  expect(parseReplyLanguagePrefix("<lang:pt-br> Olá!")).toEqual({
+    pending: false,
+    language: "pt-br",
+    content: "Olá!",
+  });
+  expect(parseReplyLanguagePrefix("<lang:Italian> Ciao!")).toEqual({
+    pending: false,
+    language: null,
+    content: "Ciao!",
+  });
+});
+
 test("grounds the assistant prompt in the current date and requires search for current facts", () => {
   const prompt = buildSystemMessageContent(new Date("2026-07-09T12:00:00.000Z"));
 
@@ -174,6 +210,7 @@ test("grounds the assistant prompt in the current date and requires search for c
   expect(prompt).toContain("sports");
   expect(prompt).toContain("Use web_search");
   expect(prompt).toContain("don't answer those from memory");
+  expect(prompt).toContain("<lang:xx>");
 });
 
 test("parses text-form tool calls instead of speaking their XML", () => {

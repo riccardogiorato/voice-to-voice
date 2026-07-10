@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { VoiceSession } from "./voice-session";
-import { REPLY_GRACE_INCOMPLETE_MS } from "./voice-utils";
+import { REPLY_GRACE_INCOMPLETE_MS, ttsVoiceForLanguage } from "./voice-utils";
 
 const originalTogetherKey = process.env.TOGETHER_API_KEY;
 
@@ -164,6 +164,36 @@ test("closes the client socket with diagnostic code and reason", () => {
 
   expect(client.closeCode).toBe(1011);
   expect(client.closeReason).toBe("client message handler failed");
+});
+
+test("selects a native voice for the active TTS model and language", () => {
+  expect(
+    ttsVoiceForLanguage({ model: "cartesia/sonic-3", voice: "nonfiction man" }, "it"),
+  ).toBe("italian calm man");
+  expect(
+    ttsVoiceForLanguage({ model: "hexgrad/Kokoro-82M", voice: "af_heart" }, "it"),
+  ).toBe("im_nicola");
+});
+
+test("updates language and voice before queued speech is flushed", () => {
+  const client = new FakeClientSocket();
+  const session = new VoiceSession(client as any);
+  const tts = new FakeTtsSocket();
+
+  (session as any).tts = tts;
+  (session as any).setTtsLanguage("it");
+  (session as any).speak("Certo, posso aiutarti.");
+  (session as any).handleTtsMessage(rawMessage({ type: "session.created" }));
+
+  expect(tts.sent[0]).toEqual({
+    type: "tts_session.updated",
+    session: { language: "it", voice: "italian calm man" },
+  });
+  expect(tts.sent[1]).toEqual({
+    type: "input_text_buffer.append",
+    text: "Certo, posso aiutarti.",
+    context_id: "turn-0",
+  });
 });
 
 class FakeClientSocket {

@@ -34,6 +34,17 @@ export type ToolActivity = {
   summary?: string;
 };
 
+export type ReplyDebugEvent = {
+  model: string;
+  attempt: number;
+  kind: "stream.chunk" | "stream.done";
+  rawContent?: string;
+  reasoningChars?: number;
+  toolCallDeltas?: unknown[];
+  finishReason?: string | null;
+  usage?: unknown;
+};
+
 const MAX_TOOL_ROUNDS = 1;
 
 export async function generateAssistantReply({
@@ -41,13 +52,17 @@ export async function generateAssistantReply({
   transcript,
   signal,
   onDelta,
+  onLanguage,
   onToolActivity,
+  onDebug,
 }: {
   history: ChatMessage[];
   transcript: string;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
+  onLanguage?: (language: string) => void;
   onToolActivity?: (activity: ToolActivity) => void;
+  onDebug?: (event: ReplyDebugEvent) => void;
 }) {
   const messages: TogetherMessage[] = [
     {
@@ -61,10 +76,18 @@ export async function generateAssistantReply({
   for (const model of CHAT_MODELS) {
     let emittedForModel = false;
     try {
-      return await answerWithModel(model, messages, signal, (delta) => {
-        emittedForModel = true;
-        onDelta(delta);
-      }, onToolActivity);
+      return await answerWithModel(
+        model,
+        messages,
+        signal,
+        (delta) => {
+          emittedForModel = true;
+          onDelta(delta);
+        },
+        (language) => onLanguage?.(language),
+        onToolActivity,
+        (event) => onDebug?.({ model, attempt: 1, ...event }),
+      );
     } catch (error) {
       lastError = error;
       if (signal.aborted || emittedForModel) throw error;
@@ -101,11 +124,14 @@ async function answerWithModel(
   initialMessages: TogetherMessage[],
   signal: AbortSignal,
   onDelta: (delta: string) => void,
+  onLanguage: (language: string) => void,
   onToolActivity: ((activity: ToolActivity) => void) | undefined,
+  onDebug: ((event: Omit<ReplyDebugEvent, "model" | "attempt">) => void) | undefined,
 ) {
   const messages = initialMessages.map((message) => ({ ...message })) as TogetherMessage[];
   let finalContent = "";
   let rawFinalContent = "";
+  let replyLanguage: string | undefined;
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const allowTools = round < MAX_TOOL_ROUNDS && Boolean(process.env.EXA_API_KEY);
@@ -122,6 +148,7 @@ async function answerWithModel(
         }
         emitFinalDelta(delta);
       },
+      onDebug,
     });
 
     if (signal.aborted) throw new Error("Reply cancelled.");
@@ -178,7 +205,15 @@ async function answerWithModel(
 
   function emitFinalDelta(delta: string) {
     rawFinalContent += delta;
-    const nextContent = stripAssistantMarkdown(rawFinalContent);
+    const parsed = parseReplyLanguagePrefix(rawFinalContent);
+    if (parsed.pending) return;
+
+    if (!replyLanguage) {
+      replyLanguage = parsed.language ?? "en";
+      onLanguage(replyLanguage);
+    }
+
+    const nextContent = stripAssistantMarkdown(parsed.content);
     if (!nextContent.startsWith(finalContent)) {
       const safeDelta = stripAssistantMarkdown(delta);
       if (!safeDelta) return;
@@ -193,23 +228,72 @@ async function answerWithModel(
   }
 }
 
+type ReplyLanguagePrefix =
+  | { pending: true }
+  | { pending: false; language: string | null; content: string };
+
+export function parseReplyLanguagePrefix(content: string): ReplyLanguagePrefix {
+  const leadingWhitespace = content.match(/^\s*/)?.[0].length ?? 0;
+  const candidate = content.slice(leadingWhitespace);
+  if (!candidate) return { pending: true };
+
+  const compactTag = candidate.match(
+    /^<lang:\s*([a-z]{2}(?:-[a-z]{2})?)\s*>\s*/i,
+  );
+  if (compactTag) {
+    return {
+      pending: false,
+      language: compactTag[1].toLowerCase(),
+      content: candidate.slice(compactTag[0].length),
+    };
+  }
+
+  const xmlTag = candidate.match(
+    /^<language>\s*([a-z]{2}(?:-[a-z]{2})?)\s*<\/language>\s*/i,
+  );
+  if (xmlTag) {
+    return {
+      pending: false,
+      language: xmlTag[1].toLowerCase(),
+      content: candidate.slice(xmlTag[0].length),
+    };
+  }
+
+  const lowerCandidate = candidate.toLowerCase();
+  const mightBeSplitTag =
+    "<lang:".startsWith(lowerCandidate) ||
+    "<language>".startsWith(lowerCandidate) ||
+    (lowerCandidate.startsWith("<lang:") && !lowerCandidate.includes(">")) ||
+    (lowerCandidate.startsWith("<language>") &&
+      !lowerCandidate.includes("</language>"));
+  if (mightBeSplitTag && candidate.length < 48) return { pending: true };
+
+  // Never expose malformed control metadata to the user or TTS.
+  const withoutMalformedTag = candidate.replace(
+    /^<lang(?:uage)?[^>]*>\s*/i,
+    "",
+  );
+  return { pending: false, language: null, content: withoutMalformedTag };
+}
+
 async function streamTogetherChat({
   model,
   messages,
   signal,
   tools,
   streamContent,
+  onDebug,
 }: {
   model: string;
   messages: TogetherMessage[];
   signal: AbortSignal;
   tools?: typeof AVAILABLE_TOOLS;
   streamContent: (delta: string) => void;
+  onDebug?: (event: Omit<ReplyDebugEvent, "model" | "attempt">) => void;
 }): Promise<ChatStreamResult> {
   const body: Record<string, unknown> = {
     model,
     messages,
-    max_tokens: 180,
     temperature: 0.35,
     stream: true,
     stream_options: { include_usage: true },
@@ -265,6 +349,7 @@ async function streamTogetherChat({
 
       const payload = trimmed.slice(5).trim();
       if (payload === "[DONE]") {
+        onDebug?.({ kind: "stream.done" });
         return {
           content,
           toolCalls: [...toolCalls.values()],
@@ -279,7 +364,36 @@ async function streamTogetherChat({
         continue;
       }
 
-      const delta = json.choices?.[0]?.delta;
+      const choice = json.choices?.[0];
+      const delta = choice?.delta;
+      const rawContent = typeof delta?.content === "string" ? delta.content : undefined;
+      const deltaReasoningChars =
+        typeof delta?.reasoning === "string" ? delta.reasoning.length : undefined;
+      const toolCallDeltas = Array.isArray(delta?.tool_calls)
+        ? delta.tool_calls
+        : undefined;
+      const finishReason =
+        typeof choice?.finish_reason === "string" || choice?.finish_reason === null
+          ? choice.finish_reason
+          : undefined;
+      if (
+        rawContent !== undefined ||
+        deltaReasoningChars !== undefined ||
+        toolCallDeltas !== undefined ||
+        finishReason !== undefined ||
+        json.usage !== undefined
+      ) {
+        onDebug?.({
+          kind: "stream.chunk",
+          ...(rawContent !== undefined ? { rawContent } : {}),
+          ...(deltaReasoningChars !== undefined
+            ? { reasoningChars: deltaReasoningChars }
+            : {}),
+          ...(toolCallDeltas !== undefined ? { toolCallDeltas } : {}),
+          ...(finishReason !== undefined ? { finishReason } : {}),
+          ...(json.usage !== undefined ? { usage: json.usage } : {}),
+        });
+      }
       if (!delta) continue;
 
       if (typeof delta.reasoning === "string") {

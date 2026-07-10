@@ -33,6 +33,48 @@ export const TTS_MODELS = uniqueTtsConfigs([
   { model: TTS_MODEL, voice: TTS_VOICE },
   { model: TTS_FALLBACK_MODEL, voice: TTS_FALLBACK_VOICE },
 ]);
+
+const CARTESIA_VOICES_BY_LANGUAGE: Record<string, string> = {
+  de: "friendly german man",
+  es: "spanish narrator man",
+  fr: "friendly french man",
+  hi: "hindi calm man",
+  it: "italian calm man",
+  ja: "japanese male conversational",
+  ko: "korean narrator man",
+  nl: "dutch man",
+  pl: "polish confident man",
+  pt: "brazilian young man",
+  ru: "russian narrator man 1",
+  sv: "swedish narrator man",
+  tr: "turkish calm man",
+  zh: "chinese commercial man",
+};
+
+const KOKORO_VOICES_BY_LANGUAGE: Record<string, string> = {
+  es: "em_alex",
+  fr: "ff_siwis",
+  hi: "hm_omega",
+  it: "im_nicola",
+  ja: "jm_kumo",
+  pt: "pm_alex",
+  zh: "zm_yunjian",
+};
+
+export function ttsVoiceForLanguage(
+  config: { model: string; voice: string },
+  language: string,
+) {
+  const baseLanguage = language.split("-")[0];
+  if (baseLanguage === "en") return config.voice;
+  if (config.model.startsWith("cartesia/")) {
+    return CARTESIA_VOICES_BY_LANGUAGE[baseLanguage] ?? config.voice;
+  }
+  if (config.model === "hexgrad/Kokoro-82M") {
+    return KOKORO_VOICES_BY_LANGUAGE[baseLanguage] ?? config.voice;
+  }
+  return config.voice;
+}
 // Merge window: long enough to catch a mid-sentence pause continuation,
 // short enough to never swallow a legitimate follow-up question.
 export const TRANSCRIPT_MERGE_WINDOW_MS = 1500;
@@ -87,6 +129,7 @@ export const systemPrompt =
   "You can use a fast web_search tool for current, recent, factual, or source-backed questions. " +
   "When tool results are provided, synthesize them into a short spoken answer and do not mention hidden reasoning. " +
   "Always reply in the same language as the user's latest message; if the language is unclear, default to English. " +
+  "Start every final answer with exactly <lang:xx>, where xx is the lowercase ISO 639-1 code for the language of your answer; use a lowercase locale such as <lang:pt-br> only when the regional variant matters. This tag is hidden control metadata, not spoken text. " +
   "Answer naturally in one or two short spoken sentences. Plain spoken text only: no markdown, bullets, bold markers, code ticks, em dashes, or formatting symbols. Spell out numbers and abbreviations.";
 
 export const transcriptRepairPrompt =
@@ -199,38 +242,6 @@ function isLowIntentNoiseTranscript(normalized: string) {
   return /^(?:ok(?:ay)?\s+)?(?:mm\s+hmm|mhm)(?:\s+i\s+don\s+t\s+know)?$/u.test(
     normalized,
   );
-}
-
-// Fast heuristic language id for TTS voice/language matching. Sits on the
-// answer path, so it must be instant: stopword hits + diacritic signals.
-// Returns null when unsure so the caller keeps the current language.
-const LANGUAGE_STOPWORDS: Record<string, Set<string>> = {
-  en: new Set(["the", "is", "are", "you", "what", "how", "and", "of", "to", "it", "that", "do", "can", "in"]),
-  it: new Set(["che", "come", "sono", "sei", "il", "la", "di", "non", "per", "con", "una", "cosa", "mi", "ciao", "grazie", "oggi", "posso", "puoi"]),
-  es: new Set(["que", "como", "estas", "el", "los", "las", "de", "no", "por", "con", "una", "hola", "gracias", "hoy", "puedes", "donde", "para"]),
-  fr: new Set(["que", "comment", "est", "le", "les", "des", "de", "ne", "pas", "pour", "avec", "une", "bonjour", "merci", "vous", "je", "quoi"]),
-};
-
-export function detectSpokenLanguage(text: string): string | null {
-  const words = normalizeTranscript(text).split(" ").filter(Boolean);
-  if (words.length === 0) return null;
-
-  const scores: Record<string, number> = { en: 0, it: 0, es: 0, fr: 0 };
-  for (const word of words) {
-    for (const [lang, stopwords] of Object.entries(LANGUAGE_STOPWORDS)) {
-      if (stopwords.has(word)) scores[lang] += 1;
-    }
-  }
-  // Diacritics are strong signals stopwords can miss on short utterances.
-  if (/[àèéìòù]/.test(text) && !/[¿¡ñ]/.test(text)) scores.it += 1;
-  if (/[¿¡ñ]/.test(text)) scores.es += 2;
-  if (/[êëîïûüœ]|c'est|qu'/.test(text)) scores.fr += 2;
-
-  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  const [bestLang, bestScore] = ranked[0];
-  // Require a clear winner; ties or weak evidence keep the current language.
-  if (bestScore === 0 || bestScore === ranked[1][1]) return null;
-  return bestLang;
 }
 
 export function transcriptLooksComplete(text: string) {
