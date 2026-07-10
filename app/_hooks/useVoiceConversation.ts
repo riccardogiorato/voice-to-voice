@@ -422,6 +422,10 @@ export function useVoiceConversation() {
     if (event.type === "assistant.delta") {
       setError("");
       scheduleSpeakingWatchdog();
+      resetIgnoredTtsItemsForNewResponse(
+        ignoredTtsItemIdsRef.current,
+        assistantGeneratedTextRef.current,
+      );
       assistantGeneratedTextRef.current += event.text;
       return;
     }
@@ -1581,6 +1585,13 @@ export function shouldIgnoreTtsItem(
   itemId?: string,
 ) {
   return Boolean(itemId && ignoredItemIds.has(itemId));
+}
+
+export function resetIgnoredTtsItemsForNewResponse(
+  ignoredItemIds: Set<string>,
+  currentGeneratedText: string,
+) {
+  if (!currentGeneratedText) ignoredItemIds.clear();
 }
 
 export function buildTranscriptItems({

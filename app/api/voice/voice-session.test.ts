@@ -108,7 +108,7 @@ test("ignores low-intent filler transcripts from background noise", async () => 
     scheduled.push({ rawTranscript, merged });
   };
 
-  for (const transcript of ["Mm-hmm.", "Okay Mm-hmm I don't know."]) {
+  for (const transcript of ["Mm-hmm.", "Okay Mm-hmm I don't know.", "Sh"]) {
     (session as any).handleClientMessage(rawMessage({ type: "speech.started" }));
     (session as any).handleClientMessage(rawMessage({ type: "audio.commit" }));
     (session as any).handleSttMessage(
@@ -129,6 +129,10 @@ test("ignores low-intent filler transcripts from background noise", async () => 
   expect(client.sent).toContainEqual({
     type: "transcript.ignored",
     text: "Okay Mm-hmm I don't know.",
+  });
+  expect(client.sent).toContainEqual({
+    type: "transcript.ignored",
+    text: "Sh",
   });
 });
 

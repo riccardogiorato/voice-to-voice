@@ -20,6 +20,7 @@ import {
   selectCompletedAssistantText,
   shouldCommitAssistantOnAudioClear,
   shouldIgnoreTtsItem,
+  resetIgnoredTtsItemsForNewResponse,
   shouldKeepSpeechOpen,
 } from "./useVoiceConversation";
 
@@ -47,6 +48,12 @@ test("ignores late words and audio from a cancelled TTS item", () => {
   expect(shouldIgnoreTtsItem(ignored, "tts_2")).toBe(true);
   expect(shouldIgnoreTtsItem(ignored, "tts_3")).toBe(false);
   expect(shouldIgnoreTtsItem(ignored, undefined)).toBe(false);
+});
+
+test("accepts a reused TTS item id when a new assistant response starts", () => {
+  const ignored = new Set(["tts_1"]);
+  resetIgnoredTtsItemsForNewResponse(ignored, "");
+  expect(shouldIgnoreTtsItem(ignored, "tts_1")).toBe(false);
 });
 
 test("includes websocket close details in the reconnect message", () => {

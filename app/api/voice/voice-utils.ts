@@ -98,6 +98,8 @@ const GHOST_TRANSCRIPTS = new Set([
   "mhm",
   "uh",
   "um",
+  "sh",
+  "shh",
 ]);
 
 export type ClientEvent =
