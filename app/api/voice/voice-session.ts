@@ -22,6 +22,7 @@ import {
 } from "./voice-utils";
 import { generateAssistantReply } from "./reply";
 import { repairTranscript } from "./transcript-repair";
+import type { UserContext } from "./user-context";
 import type { ToolActivity } from "./reply";
 import type { ChatMessage, ClientEvent } from "./voice-utils";
 
@@ -70,7 +71,10 @@ export class VoiceSession {
   private ttsDoneWatchdog?: NodeJS.Timeout;
   private readonly sessionId = nextSessionId++;
 
-  constructor(private client: WebSocket) {}
+  constructor(
+    private client: WebSocket,
+    private userContext: UserContext = {},
+  ) {}
 
   start() {
     this.log("client.open");
@@ -553,6 +557,7 @@ export class VoiceSession {
       await generateAssistantReply({
         history: this.history,
         transcript,
+        userContext: this.userContext,
         signal: controller.signal,
         onDelta: handleDelta,
         onLanguage: (language) => this.setTtsLanguage(language),

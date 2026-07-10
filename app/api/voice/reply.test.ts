@@ -235,9 +235,17 @@ test("accepts locale tags and hides malformed language metadata", () => {
 });
 
 test("grounds the assistant prompt in the current date without encouraging unnecessary search", () => {
-  const prompt = buildSystemMessageContent(new Date("2026-07-10T12:00:00.000Z"));
+  const prompt = buildSystemMessageContent(
+    new Date("2026-07-10T12:00:00.000Z"),
+    { timeZone: "Europe/Rome", city: "Rome", country: "IT" },
+  );
 
   expect(prompt).toContain("CURRENT DATE: Friday July 10, 2026 (UTC).");
+  expect(prompt).toContain("USER TIME ZONE: Europe/Rome.");
+  expect(prompt).not.toContain("USER APPROXIMATE LOCATION");
+  expect(prompt).toContain("call get_current_time");
+  expect(prompt).toContain("Do not use web search as a clock");
+  expect(prompt).toContain("Call get_user_location only when");
   expect(prompt).toContain("Web search rules:\n-");
   expect(prompt).toContain("Search for current facts or explicit lookup");
   expect(prompt).toContain("Always search: news, live or recent sports");

@@ -1,4 +1,6 @@
 import Exa from "exa-js";
+import type { UserContext } from "./user-context";
+import { validTimeZone } from "./user-context";
 
 export type TogetherToolCall = {
   id: string;
@@ -35,17 +37,65 @@ export const WEB_SEARCH_TOOL = {
   },
 } as const;
 
-export const AVAILABLE_TOOLS = [WEB_SEARCH_TOOL] as const;
+export const GET_CURRENT_TIME_TOOL = {
+  type: "function",
+  function: {
+    name: "get_current_time",
+    description:
+      "Get the exact current date and time. Omit time_zone for the user's current time zone, or provide an IANA time zone such as Europe/Rome.",
+    parameters: {
+      type: "object",
+      properties: {
+        time_zone: {
+          type: "string",
+          description:
+            "Optional IANA time zone. Omit it to use the user's detected time zone.",
+        },
+      },
+    },
+  },
+} as const;
+
+export const GET_USER_LOCATION_TOOL = {
+  type: "function",
+  function: {
+    name: "get_user_location",
+    description:
+      "Get the user's approximate location and time zone inferred by Vercel from the connection IP. Use only when location is relevant, and describe it as approximate.",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+  },
+} as const;
+
+export const LOCAL_CONTEXT_TOOLS = [
+  GET_CURRENT_TIME_TOOL,
+  GET_USER_LOCATION_TOOL,
+] as const;
+
+export const AVAILABLE_TOOLS = [
+  ...LOCAL_CONTEXT_TOOLS,
+  WEB_SEARCH_TOOL,
+] as const;
 
 const WEB_SEARCH_TIMEOUT_MS = 3500;
 
-export async function runToolCall(toolCall: TogetherToolCall, signal: AbortSignal) {
+export async function runToolCall(
+  toolCall: TogetherToolCall,
+  signal: AbortSignal,
+  userContext: UserContext = {},
+) {
   if (toolCallRunnerForTest) return toolCallRunnerForTest(toolCall, signal);
-  if (toolCall.function.name !== "web_search") {
-    return JSON.stringify({ error: `Unknown tool: ${toolCall.function.name}` });
+  if (toolCall.function.name === "get_current_time") {
+    return runGetCurrentTime(toolCall, userContext);
   }
+  if (toolCall.function.name === "get_user_location") {
+    return runGetUserLocation(userContext);
+  }
+  if (toolCall.function.name === "web_search") return runWebSearch(toolCall, signal);
 
-  return runWebSearch(toolCall, signal);
+  return JSON.stringify({ error: `Unknown tool: ${toolCall.function.name}` });
 }
 
 let toolCallRunnerForTest:
@@ -58,6 +108,69 @@ export function setToolCallRunnerForTest(
     | null,
 ) {
   toolCallRunnerForTest = runner;
+}
+
+function runGetCurrentTime(
+  toolCall: TogetherToolCall,
+  userContext: UserContext,
+  now = new Date(),
+) {
+  let args: { time_zone?: unknown };
+  try {
+    args = JSON.parse(toolCall.function.arguments || "{}");
+  } catch {
+    args = {};
+  }
+
+  const requestedTimeZone =
+    typeof args.time_zone === "string" ? args.time_zone : undefined;
+  const timeZone = validTimeZone(requestedTimeZone ?? userContext.timeZone ?? "UTC");
+  if (!timeZone) {
+    return JSON.stringify({
+      error: "Invalid time zone. Use an IANA name such as Europe/Rome.",
+    });
+  }
+
+  const formatted = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone,
+    timeZoneName: "longOffset",
+  }).format(now);
+
+  return JSON.stringify({
+    utc: now.toISOString(),
+    timeZone,
+    formatted,
+  });
+}
+
+function runGetUserLocation(userContext: UserContext) {
+  if (
+    !userContext.city &&
+    !userContext.countryRegion &&
+    !userContext.country &&
+    !userContext.timeZone
+  ) {
+    return JSON.stringify({
+      available: false,
+      error: "Approximate location is unavailable for this connection.",
+    });
+  }
+
+  return JSON.stringify({
+    available: true,
+    approximate: true,
+    city: userContext.city,
+    countryRegion: userContext.countryRegion,
+    country: userContext.country,
+    timeZone: userContext.timeZone,
+  });
 }
 
 async function runWebSearch(toolCall: TogetherToolCall, signal: AbortSignal) {

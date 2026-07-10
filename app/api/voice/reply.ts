@@ -3,9 +3,10 @@ import {
   compactErrorBody,
   systemPrompt,
 } from "./voice-utils";
-import { AVAILABLE_TOOLS, runToolCall } from "./tools";
+import { AVAILABLE_TOOLS, LOCAL_CONTEXT_TOOLS, runToolCall } from "./tools";
 import type { ChatMessage } from "./voice-utils";
 import type { TogetherToolCall } from "./tools";
+import type { UserContext } from "./user-context";
 
 type TogetherMessage =
   | { role: "system" | "user" | "assistant"; content: string }
@@ -54,6 +55,7 @@ const FINAL_ANSWER_PROTOCOL_REMINDER =
 export async function generateAssistantReply({
   history,
   transcript,
+  userContext = {},
   signal,
   onDelta,
   onLanguage,
@@ -62,6 +64,7 @@ export async function generateAssistantReply({
 }: {
   history: ChatMessage[];
   transcript: string;
+  userContext?: UserContext;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onLanguage?: (language: string) => void;
@@ -71,7 +74,7 @@ export async function generateAssistantReply({
   const messages: TogetherMessage[] = [
     {
       role: "system",
-      content: buildSystemMessageContent(),
+      content: buildSystemMessageContent(new Date(), userContext),
     },
     ...history,
   ];
@@ -90,6 +93,7 @@ export async function generateAssistantReply({
         },
         (language) => onLanguage?.(language),
         onToolActivity,
+        userContext,
         (event) => onDebug?.({ model, attempt: 1, ...event }),
       );
     } catch (error) {
@@ -107,7 +111,10 @@ export async function generateAssistantReply({
   throw lastError ?? new Error("Reply generation failed.");
 }
 
-export function buildSystemMessageContent(now = new Date()) {
+export function buildSystemMessageContent(
+  now = new Date(),
+  userContext: UserContext = {},
+) {
   const spokenDate = new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     month: "long",
@@ -118,6 +125,13 @@ export function buildSystemMessageContent(now = new Date()) {
 
   return `${systemPrompt}
 CURRENT DATE: ${spokenDate} (UTC).
+USER TIME ZONE: ${userContext.timeZone ?? "unknown"}.
+Time rules:
+- For the current time or date, call get_current_time. Do not use web search as a clock.
+- Omit time_zone for the user's local time. For another place, pass its IANA time zone.
+Location rules:
+- Call get_user_location only when the user's approximate location is relevant.
+- Treat IP-derived location as approximate, never as an exact address.
 Web search rules:
 - Search for current facts or explicit lookup, verification, and source requests.
 - Always search: news, live or recent sports, weather, prices, current officeholders, and ongoing events.
@@ -133,6 +147,7 @@ async function answerWithModel(
   onDelta: (delta: string) => void,
   onLanguage: (language: string) => void,
   onToolActivity: ((activity: ToolActivity) => void) | undefined,
+  userContext: UserContext,
   onDebug: ((event: Omit<ReplyDebugEvent, "model" | "attempt">) => void) | undefined,
 ) {
   const messages = initialMessages.map((message) => ({ ...message })) as TogetherMessage[];
@@ -141,13 +156,16 @@ async function answerWithModel(
   let replyLanguageResolved = false;
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
-    const allowTools = round < MAX_TOOL_ROUNDS && Boolean(process.env.EXA_API_KEY);
+    const allowTools = round < MAX_TOOL_ROUNDS;
+    const availableTools = process.env.EXA_API_KEY
+      ? AVAILABLE_TOOLS
+      : LOCAL_CONTEXT_TOOLS;
     const roundContent: string[] = [];
     const result = await streamTogetherChat({
       model,
       messages,
       signal,
-      tools: allowTools ? AVAILABLE_TOOLS : undefined,
+      tools: allowTools ? availableTools : undefined,
       streamContent: (delta) => {
         if (allowTools) {
           roundContent.push(delta);
@@ -171,6 +189,7 @@ async function answerWithModel(
         textToolCall,
         signal,
         onToolActivity,
+        userContext,
       );
       messages.push({
         role: "tool",
@@ -203,6 +222,7 @@ async function answerWithModel(
         toolCall,
         signal,
         onToolActivity,
+        userContext,
       );
       messages.push({
         role: "tool",
@@ -324,7 +344,7 @@ async function streamTogetherChat({
   model: string;
   messages: TogetherMessage[];
   signal: AbortSignal;
-  tools?: typeof AVAILABLE_TOOLS;
+  tools?: ReadonlyArray<(typeof AVAILABLE_TOOLS)[number]>;
   streamContent: (delta: string) => void;
   onDebug?: (event: Omit<ReplyDebugEvent, "model" | "attempt">) => void;
 }): Promise<ChatStreamResult> {
@@ -489,12 +509,13 @@ async function runToolCallWithActivity(
   toolCall: TogetherToolCall,
   signal: AbortSignal,
   onToolActivity: ((activity: ToolActivity) => void) | undefined,
+  userContext: UserContext,
 ) {
-  const baseActivity = describeToolCall(toolCall);
+  const baseActivity = describeToolCall(toolCall, userContext);
   onToolActivity?.({ ...baseActivity, status: "running" });
 
   try {
-    const result = await runToolCall(toolCall, signal);
+    const result = await runToolCall(toolCall, signal, userContext);
     onToolActivity?.({
       ...baseActivity,
       status: "completed",
@@ -511,13 +532,22 @@ async function runToolCallWithActivity(
   }
 }
 
-function describeToolCall(toolCall: TogetherToolCall) {
+function describeToolCall(toolCall: TogetherToolCall, userContext: UserContext) {
   const args = parseToolArguments(toolCall);
   const name = toolCall.function.name;
   return {
     id: toolCall.id || `${name}-${Date.now()}`,
     name,
-    input: typeof args.query === "string" ? args.query : undefined,
+    input:
+      typeof args.query === "string"
+        ? args.query
+        : typeof args.time_zone === "string"
+          ? args.time_zone
+          : toolCall.function.name === "get_current_time"
+            ? userContext.timeZone ?? "UTC"
+            : toolCall.function.name === "get_user_location"
+              ? "IP-derived location"
+              : undefined,
   };
 }
 
@@ -537,6 +567,11 @@ function summarizeToolResult(result: string) {
     const parsed = JSON.parse(result) as {
       error?: unknown;
       results?: Array<{ title?: unknown }>;
+      formatted?: unknown;
+      available?: unknown;
+      city?: unknown;
+      country?: unknown;
+      timeZone?: unknown;
     };
     if (typeof parsed.error === "string" && parsed.error.trim()) {
       return parsed.error.trim();
@@ -551,6 +586,17 @@ function summarizeToolResult(result: string) {
         ? `${resultLabel}: ${firstTitle.trim()}`
         : resultLabel;
     }
+    if (typeof parsed.formatted === "string" && parsed.formatted.trim()) {
+      return parsed.formatted.trim();
+    }
+    if (parsed.available === true) {
+      return [parsed.city, parsed.country, parsed.timeZone]
+        .filter(
+          (value): value is string =>
+            typeof value === "string" && Boolean(value),
+        )
+        .join(", ");
+    }
   } catch {}
 
   return "Tool completed.";
@@ -560,7 +606,13 @@ export function extractTextToolCall(content: string): TogetherToolCall | null {
   if (!/<tool_call>|<function=/i.test(content)) return null;
 
   const name = content.match(/<function=([a-zA-Z0-9_-]+)>/)?.[1];
-  if (name !== "web_search") return null;
+  if (
+    name !== "web_search" &&
+    name !== "get_current_time" &&
+    name !== "get_user_location"
+  ) {
+    return null;
+  }
 
   const args: Record<string, string | number> = {};
   for (const match of content.matchAll(
@@ -576,10 +628,15 @@ export function extractTextToolCall(content: string): TogetherToolCall | null {
     }
   }
 
-  if (typeof args.query !== "string" || args.query.trim().length === 0) return null;
+  if (
+    name === "web_search" &&
+    (typeof args.query !== "string" || args.query.trim().length === 0)
+  ) {
+    return null;
+  }
 
   return {
-    id: "text_tool_web_search",
+    id: `text_tool_${name}`,
     type: "function",
     function: {
       name,
