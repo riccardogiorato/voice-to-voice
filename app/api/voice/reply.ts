@@ -46,6 +46,10 @@ export type ReplyDebugEvent = {
 };
 
 const MAX_TOOL_ROUNDS = 1;
+const FINAL_ANSWER_PROTOCOL_REMINDER =
+  "The next response is the final spoken answer. Begin it with exactly one " +
+  "<lang:xx> prefix for the language you will use, then plain spoken text. " +
+  "The prefix is not XML: do not close or repeat it.";
 
 export async function generateAssistantReply({
   history,
@@ -131,7 +135,7 @@ async function answerWithModel(
   const messages = initialMessages.map((message) => ({ ...message })) as TogetherMessage[];
   let finalContent = "";
   let rawFinalContent = "";
-  let replyLanguage: string | undefined;
+  let replyLanguageResolved = false;
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const allowTools = round < MAX_TOOL_ROUNDS && Boolean(process.env.EXA_API_KEY);
@@ -170,6 +174,10 @@ async function answerWithModel(
         tool_call_id: textToolCall.id,
         content: toolResult,
       });
+      messages.push({
+        role: "system",
+        content: FINAL_ANSWER_PROTOCOL_REMINDER,
+      });
       continue;
     }
 
@@ -199,6 +207,10 @@ async function answerWithModel(
         content: toolResult,
       });
     }
+    messages.push({
+      role: "system",
+      content: FINAL_ANSWER_PROTOCOL_REMINDER,
+    });
   }
 
   throw new Error("Reply model did not produce a final answer after tool use.");
@@ -208,12 +220,16 @@ async function answerWithModel(
     const parsed = parseReplyLanguagePrefix(rawFinalContent);
     if (parsed.pending) return;
 
-    if (!replyLanguage) {
-      replyLanguage = parsed.language ?? "en";
-      onLanguage(replyLanguage);
+    if (!replyLanguageResolved) {
+      replyLanguageResolved = true;
+      // A missing tag must not reset a previously confirmed non-English TTS
+      // context. English is already the session default for first turns.
+      if (parsed.language) onLanguage(parsed.language);
     }
 
-    const nextContent = stripAssistantMarkdown(parsed.content);
+    const nextContent = stripAssistantMarkdown(
+      stripReplyLanguageControlTags(parsed.content),
+    );
     if (!nextContent.startsWith(finalContent)) {
       const safeDelta = stripAssistantMarkdown(delta);
       if (!safeDelta) return;
@@ -274,6 +290,24 @@ export function parseReplyLanguagePrefix(content: string): ReplyLanguagePrefix {
     "",
   );
   return { pending: false, language: null, content: withoutMalformedTag };
+}
+
+export function stripReplyLanguageControlTags(content: string) {
+  const withoutCompleteTags = content.replace(
+    /\s*<\/lang(?:uage)?(?::[a-z]{2}(?:-[a-z]{2})?)?>\s*/gi,
+    " ",
+  );
+  const lastTagStart = withoutCompleteTags.lastIndexOf("<");
+  if (lastTagStart < 0) return withoutCompleteTags;
+
+  const suffix = withoutCompleteTags.slice(lastTagStart).trim().toLowerCase();
+  const isPartialClosingTag =
+    "</lang:".startsWith(suffix) ||
+    "</language>".startsWith(suffix) ||
+    /^<\/lang(?:uage)?(?::[a-z-]*)?>?$/i.test(suffix);
+  return isPartialClosingTag
+    ? withoutCompleteTags.slice(0, lastTagStart).trimEnd()
+    : withoutCompleteTags;
 }
 
 async function streamTogetherChat({

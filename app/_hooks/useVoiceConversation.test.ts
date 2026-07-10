@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  appendAssistantTurn,
   appendSpokenWordText,
   buildConversationItems,
   buildSocketCloseMessage,
@@ -17,8 +18,36 @@ import {
   mergeAssistantWordTimings,
   selectAssistantDraftText,
   selectCompletedAssistantText,
+  shouldCommitAssistantOnAudioClear,
+  shouldIgnoreTtsItem,
   shouldKeepSpeechOpen,
 } from "./useVoiceConversation";
+
+test("merges consecutive fragments from one assistant reply", () => {
+  expect(
+    appendAssistantTurn(
+      [{ role: "assistant", text: "NVIDIA Parakeet transcribes your" }],
+      "speech, an open",
+    ),
+  ).toEqual([
+    {
+      role: "assistant",
+      text: "NVIDIA Parakeet transcribes your speech, an open",
+    },
+  ]);
+});
+
+test("does not recommit an interruption acknowledged by audio clear", () => {
+  expect(shouldCommitAssistantOnAudioClear(true)).toBe(false);
+  expect(shouldCommitAssistantOnAudioClear(false)).toBe(true);
+});
+
+test("ignores late words and audio from a cancelled TTS item", () => {
+  const ignored = new Set(["tts_2"]);
+  expect(shouldIgnoreTtsItem(ignored, "tts_2")).toBe(true);
+  expect(shouldIgnoreTtsItem(ignored, "tts_3")).toBe(false);
+  expect(shouldIgnoreTtsItem(ignored, undefined)).toBe(false);
+});
 
 test("includes websocket close details in the reconnect message", () => {
   expect(

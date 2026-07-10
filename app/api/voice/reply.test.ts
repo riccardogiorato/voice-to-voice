@@ -78,28 +78,38 @@ test("does not stream assistant text from a tool-call planning turn", async () =
       ]);
     }
 
-    expect(JSON.parse(String(init?.body)).messages.at(-1)).toMatchObject({
-      role: "tool",
-      tool_call_id: "call_search",
+    const messages = JSON.parse(String(init?.body)).messages;
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_search",
+      }),
+    );
+    expect(messages.at(-1)).toMatchObject({
+      role: "system",
+      content: expect.stringContaining("<lang:xx>"),
     });
 
     return sseResponse([
-      { choices: [{ delta: { content: "Venice is mild and clear right now." } }] },
+      { choices: [{ delta: { content: "<lang:it>Venezia è mite e serena." } }] },
     ]);
   }) as typeof fetch;
 
   const deltas: string[] = [];
+  const languages: string[] = [];
   const toolActivities: unknown[] = [];
   const reply = await generateAssistantReply({
     history: [{ role: "user", content: "Check the weather in Venice." }],
     transcript: "Check the weather in Venice.",
     signal: new AbortController().signal,
     onDelta: (delta) => deltas.push(delta),
+    onLanguage: (language) => languages.push(language),
     onToolActivity: (activity) => toolActivities.push(activity),
   });
 
-  expect(reply).toBe("Venice is mild and clear right now.");
-  expect(deltas).toEqual(["Venice is mild and clear right now."]);
+  expect(reply).toBe("Venezia è mite e serena.");
+  expect(deltas).toEqual(["Venezia è mite e serena."]);
+  expect(languages).toEqual(["it"]);
   expect(toolActivities).toEqual([
     {
       id: "call_search",
@@ -116,6 +126,26 @@ test("does not stream assistant text from a tool-call planning turn", async () =
     },
   ]);
   expect(togetherCalls).toBe(2);
+});
+
+test("does not reset the active voice when a final answer omits its language tag", async () => {
+  process.env.EXA_API_KEY = "";
+  globalThis.fetch = (async (_input) =>
+    sseResponse([
+      { choices: [{ delta: { content: "Il Mondiale è ancora in corso." } }] },
+    ])) as typeof fetch;
+
+  const languages: string[] = [];
+  const reply = await generateAssistantReply({
+    history: [{ role: "user", content: "Chi ha vinto i mondiali?" }],
+    transcript: "Chi ha vinto i mondiali?",
+    signal: new AbortController().signal,
+    onLanguage: (language) => languages.push(language),
+    onDelta: () => {},
+  });
+
+  expect(reply).toBe("Il Mondiale è ancora in corso.");
+  expect(languages).toEqual([]);
 });
 
 test("strips a leading final channel marker from reply deltas", async () => {
@@ -174,6 +204,8 @@ test("extracts a split model language tag before streaming spoken text", async (
       { choices: [{ delta: { content: "<la" } }] },
       { choices: [{ delta: { content: "ng:it>" } }] },
       { choices: [{ delta: { content: "Certo, posso aiutarti." } }] },
+      { choices: [{ delta: { content: " </lang" } }] },
+      { choices: [{ delta: { content: ":it>" } }] },
     ])) as typeof fetch;
 
   const events: string[] = [];
@@ -211,6 +243,7 @@ test("grounds the assistant prompt in the current date and requires search for c
   expect(prompt).toContain("Use web_search");
   expect(prompt).toContain("don't answer those from memory");
   expect(prompt).toContain("<lang:xx>");
+  expect(prompt).toContain("Never output a closing language tag");
 });
 
 test("parses text-form tool calls instead of speaking their XML", () => {

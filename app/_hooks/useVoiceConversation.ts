@@ -174,6 +174,8 @@ export function useVoiceConversation() {
   const assistantGeneratedTextRef = useRef("");
   const ttsAudioStartsRef = useRef(new Map<string, number>());
   const ttsWordTimingsRef = useRef(new Map<string, AssistantWordTiming[]>());
+  const ignoredTtsItemIdsRef = useRef(new Set<string>());
+  const localAssistantCancellationPendingRef = useRef(false);
   const wordSyncFrameRef = useRef<number | null>(null);
   const nextPlayTimeRef = useRef(0);
   const phaseRef = useRef<Phase>("idle");
@@ -425,11 +427,13 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "assistant.words") {
+      if (shouldIgnoreTtsItem(ignoredTtsItemIdsRef.current, event.itemId)) return;
       storeAssistantWordTimings(event);
       return;
     }
 
     if (event.type === "audio.delta") {
+      if (shouldIgnoreTtsItem(ignoredTtsItemIdsRef.current, event.itemId)) return;
       scheduleSpeakingWatchdog();
       playPcm16(event.audio, event.sampleRate, event.itemId);
       return;
@@ -442,7 +446,17 @@ export function useVoiceConversation() {
     }
 
     if (event.type === "audio.clear") {
-      commitInterruptedAssistantDraft();
+      ignoreCurrentTtsItems();
+      if (
+        shouldCommitAssistantOnAudioClear(
+          localAssistantCancellationPendingRef.current,
+        )
+      ) {
+        commitInterruptedAssistantDraft();
+      } else {
+        resetAssistantSpeechTracking();
+      }
+      localAssistantCancellationPendingRef.current = false;
       clearPlayback();
       return;
     }
@@ -670,6 +684,8 @@ export function useVoiceConversation() {
       }
 
       sendClientEvent({ type: "response.cancel" }, socket);
+      ignoreCurrentTtsItems();
+      localAssistantCancellationPendingRef.current = true;
       commitInterruptedAssistantDraft();
       clearPlayback();
       updatePhase("listening");
@@ -1053,6 +1069,15 @@ export function useVoiceConversation() {
     ttsAudioStartsRef.current.clear();
     ttsWordTimingsRef.current.clear();
     setAssistantDraftText("");
+  }
+
+  function ignoreCurrentTtsItems() {
+    for (const itemId of ttsAudioStartsRef.current.keys()) {
+      ignoredTtsItemIdsRef.current.add(itemId);
+    }
+    for (const itemId of ttsWordTimingsRef.current.keys()) {
+      ignoredTtsItemIdsRef.current.add(itemId);
+    }
   }
 
   function clearAssistantFinalizeTimer() {
@@ -1533,7 +1558,29 @@ function countDisplayWords(text: string) {
 }
 
 export function appendAssistantTurn(turns: Turn[], text: string) {
-  return trimCommittedTurns([...turns, { role: "assistant", text }]);
+  const next = turns.slice();
+  const last = next.at(-1);
+  if (last?.role === "assistant") {
+    next[next.length - 1] = {
+      ...last,
+      text: `${last.text.trimEnd()} ${text.trimStart()}`,
+    };
+    return trimCommittedTurns(next);
+  }
+  return trimCommittedTurns([...next, { role: "assistant", text }]);
+}
+
+export function shouldCommitAssistantOnAudioClear(
+  localCancellationPending: boolean,
+) {
+  return !localCancellationPending;
+}
+
+export function shouldIgnoreTtsItem(
+  ignoredItemIds: ReadonlySet<string>,
+  itemId?: string,
+) {
+  return Boolean(itemId && ignoredItemIds.has(itemId));
 }
 
 export function buildTranscriptItems({
