@@ -42,7 +42,7 @@ export const GET_CURRENT_TIME_TOOL = {
   function: {
     name: "get_current_time",
     description:
-      "Get the exact current date and time. Omit time_zone for the user's current time zone, or provide an IANA time zone such as Europe/Rome.",
+      "Get the exact current date and time using the clock convention of the relevant region. Omit both arguments for the user's local time.",
     parameters: {
       type: "object",
       properties: {
@@ -50,6 +50,11 @@ export const GET_CURRENT_TIME_TOOL = {
           type: "string",
           description:
             "Optional IANA time zone. Omit it to use the user's detected time zone.",
+        },
+        country_code: {
+          type: "string",
+          description:
+            "Optional two-letter country code used for the region's 12-hour or 24-hour clock convention. Provide it with time_zone for another place.",
         },
       },
     },
@@ -61,7 +66,7 @@ export const GET_USER_LOCATION_TOOL = {
   function: {
     name: "get_user_location",
     description:
-      "Get the user's approximate location and time zone inferred by Vercel from the connection IP. Use only when location is relevant, and describe it as approximate.",
+      "Get the user's approximate current region and time zone. Use only when location is relevant, and describe the result naturally as approximate.",
     parameters: {
       type: "object",
       properties: {},
@@ -115,7 +120,7 @@ function runGetCurrentTime(
   userContext: UserContext,
   now = new Date(),
 ) {
-  let args: { time_zone?: unknown };
+  let args: { time_zone?: unknown; country_code?: unknown };
   try {
     args = JSON.parse(toolCall.function.arguments || "{}");
   } catch {
@@ -131,7 +136,9 @@ function runGetCurrentTime(
     });
   }
 
-  const formatted = new Intl.DateTimeFormat("en-US", {
+  const requestedCountry = validCountryCode(args.country_code);
+  const country = requestedCountry ?? validCountryCode(userContext.country) ?? "US";
+  const formatted = new Intl.DateTimeFormat(`en-${country}`, {
     weekday: "long",
     year: "numeric",
     month: "long",
@@ -146,8 +153,16 @@ function runGetCurrentTime(
   return JSON.stringify({
     utc: now.toISOString(),
     timeZone,
+    country,
     formatted,
   });
+}
+
+function validCountryCode(value: unknown) {
+  if (typeof value !== "string" || !/^[a-z]{2}$/i.test(value.trim())) {
+    return undefined;
+  }
+  return value.trim().toUpperCase();
 }
 
 function runGetUserLocation(userContext: UserContext) {

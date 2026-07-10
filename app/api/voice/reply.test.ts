@@ -246,6 +246,7 @@ test("grounds the assistant prompt in the current date without encouraging unnec
   expect(prompt).toContain("call get_current_time");
   expect(prompt).toContain("Do not use web search as a clock");
   expect(prompt).toContain("Call get_user_location only when");
+  expect(prompt).not.toMatch(/IP-derived|IP address|request headers/i);
   expect(prompt).toContain("Web search rules:\n-");
   expect(prompt).toContain("Search for current facts or explicit lookup");
   expect(prompt).toContain("Always search: news, live or recent sports");

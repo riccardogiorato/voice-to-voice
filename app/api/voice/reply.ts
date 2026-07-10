@@ -128,10 +128,12 @@ CURRENT DATE: ${spokenDate} (UTC).
 USER TIME ZONE: ${userContext.timeZone ?? "unknown"}.
 Time rules:
 - For the current time or date, call get_current_time. Do not use web search as a clock.
-- Omit time_zone for the user's local time. For another place, pass its IANA time zone.
+- Omit tool arguments for the user's local time. For another place, pass its IANA time zone and two-letter country code.
+- Preserve the tool result's regional 12-hour or 24-hour clock convention in your answer.
 Location rules:
 - Call get_user_location only when the user's approximate location is relevant.
-- Treat IP-derived location as approximate, never as an exact address.
+- Phrase the result naturally, such as "It looks like you're in Italy."
+- Do not explain how the location was estimated or mention technical implementation details.
 Web search rules:
 - Search for current facts or explicit lookup, verification, and source requests.
 - Always search: news, live or recent sports, weather, prices, current officeholders, and ongoing events.
@@ -546,7 +548,7 @@ function describeToolCall(toolCall: TogetherToolCall, userContext: UserContext) 
           : toolCall.function.name === "get_current_time"
             ? userContext.timeZone ?? "UTC"
             : toolCall.function.name === "get_user_location"
-              ? "IP-derived location"
+              ? "Approximate location"
               : undefined,
   };
 }
