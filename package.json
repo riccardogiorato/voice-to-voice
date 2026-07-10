@@ -10,7 +10,7 @@
     "bench:tts": "node scripts/benchmark-together-tts.mts",
     "bench:repair": "node scripts/benchmark-together-repair.mts",
     "bench:reply": "bun scripts/benchmark-together-reply.mts",
-    "test": "bun test app/api/voice/*.test.ts app/_hooks/*.test.ts",
+    "test": "bun test app/api/voice/*.test.ts app/_hooks/*.test.ts app/_components/voice/*.test.ts",
     "test:voice": "node scripts/e2e-voice-latency.mjs",
     "deploy": "vercel --prod"
   },

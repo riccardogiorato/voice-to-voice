@@ -48,6 +48,20 @@ const toolActivities: ToolActivityItem[] = [
     input: "recent benchmark source",
     summary: "The search provider did not return results.",
   },
+  {
+    id: "design-tool-time",
+    name: "get_current_time",
+    status: "completed" as const,
+    input: "Europe/Rome",
+    summary: "Friday, July 10, 2026 at 8:20:20 PM GMT+02:00",
+  },
+  {
+    id: "design-tool-location",
+    name: "get_user_location",
+    status: "completed" as const,
+    input: "IP-derived location",
+    summary: "Rome, IT, Europe/Rome",
+  },
 ];
 
 const conversationItems: ConversationTimelineItem[] = [
