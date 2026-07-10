@@ -243,6 +243,29 @@ button {
   overflow: hidden;
 }
 
+.voice-message-bubble {
+  position: relative;
+  border-radius: 20px;
+}
+
+.voice-message-user {
+  border-bottom-right-radius: 6px;
+  color: white;
+  background: #f252cc;
+}
+
+.voice-message-user-pending {
+  border-bottom-right-radius: 6px;
+  color: rgba(36, 26, 45, 0.76);
+  background: #dcd6e1;
+}
+
+.voice-message-assistant {
+  border-bottom-left-radius: 6px;
+  color: #121212;
+  background: #e9e9ea;
+}
+
 .conversation-scroll {
   scrollbar-width: none;
 }

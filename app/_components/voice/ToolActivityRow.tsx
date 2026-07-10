@@ -10,8 +10,8 @@ export function ToolActivityRow({ activity }: { activity: ToolActivityItem }) {
   const text = activity.input ? `${label}: ${activity.input}` : label;
 
   return (
-    <div className="max-w-[86%] self-start rounded-[18px] bg-white/48 px-3 py-1.5 text-[#33253d] shadow-[0_0_0_1px_rgba(255,255,255,0.5),0_8px_22px_rgba(42,26,52,0.06)] backdrop-blur-xl">
-      <p className="flex min-w-0 items-center gap-1.5 truncate text-sm leading-5 text-[#5a4a64]">
+    <div className="max-w-[86%] self-start rounded-[18px] bg-[#e9e9ea] px-3.5 py-2 text-[#121212]">
+      <p className="flex min-w-0 items-center gap-1.5 truncate text-sm leading-5 text-[#121212]">
         <StatusIcon
           className={cx("size-3.5 shrink-0 text-[#8f5fb0]", isRunning && "animate-spin")}
           aria-hidden

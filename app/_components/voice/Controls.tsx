@@ -29,8 +29,7 @@ const toneClasses: Record<VoiceIconButtonTone, string> = {
     "bg-white/74 text-[#6b5a82] shadow-[0_0_0_1px_rgba(5,5,5,0.06),0_6px_16px_rgba(65,42,78,0.06)]",
   softActive:
     "bg-[#f4edff] text-[#6b3f91] shadow-[0_0_0_1px_rgba(127,79,172,0.12),0_8px_20px_rgba(65,42,78,0.08)]",
-  voice:
-    "bg-[linear-gradient(145deg,#c6a8f4_0%,#ef2cc1_54%,#fc4c02_100%)] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.42),0_10px_24px_rgba(239,44,193,0.22),0_16px_34px_rgba(252,76,2,0.16)]",
+  voice: "bg-[linear-gradient(145deg,#c6a8f4_0%,#ef2cc1_54%,#fc4c02_100%)] text-white shadow-none",
 };
 
 const hoverClasses: Record<VoiceIconButtonTone, string> = {
@@ -44,8 +43,7 @@ const hoverClasses: Record<VoiceIconButtonTone, string> = {
     "hover:bg-white hover:text-[#6b3f91] hover:shadow-[0_0_0_1px_rgba(127,79,172,0.14),0_8px_20px_rgba(65,42,78,0.09)]",
   softActive:
     "hover:bg-white hover:text-[#6b3f91] hover:shadow-[0_0_0_1px_rgba(127,79,172,0.14),0_8px_20px_rgba(65,42,78,0.09)]",
-  voice:
-    "hover:text-white hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_12px_28px_rgba(239,44,193,0.28),0_18px_38px_rgba(252,76,2,0.2)]",
+  voice: "hover:text-white hover:shadow-none",
 };
 
 export function VoiceIconButton({

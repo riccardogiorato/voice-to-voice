@@ -70,7 +70,7 @@ export function VoicePhoneLayout({
       } ${canStartFromSurface ? "cursor-pointer" : ""}`}
       onClick={handleSurfaceClick}
     >
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(198,168,244,0.18),rgba(255,255,255,0)_24%),radial-gradient(circle_at_100%_5%,rgba(239,44,193,0.12),transparent_24%),radial-gradient(circle_at_0%_95%,rgba(252,76,2,0.1),transparent_28%)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(198,168,244,0.18),rgba(255,255,255,0)_24%),radial-gradient(circle_at_100%_5%,rgba(239,44,193,0.12),transparent_24%)]" />
 
       <header className="relative z-10 px-7 pt-7">
         <VoiceBrandHeader
@@ -79,7 +79,7 @@ export function VoicePhoneLayout({
         />
       </header>
 
-      <div className="relative z-10 flex flex-1 flex-col px-7 pb-7 pt-6">
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden px-7 pb-7 pt-6">
         {settingsOpen ? (
           <VoiceSettingsPanel
             debugCopied={debugCopied}
@@ -98,7 +98,7 @@ export function VoicePhoneLayout({
           <VoiceStatusPill label={status.label} detail={status.detail} />
         </div>
 
-        <div className="space-y-4">
+        <div className="shrink-0 space-y-4">
           {messagesOpen ? (
             <VoiceConversationStream
               items={conversationItems}
@@ -112,11 +112,13 @@ export function VoicePhoneLayout({
             {isActive ? (
               <motion.div
                 key="active-controls"
-                className="overflow-hidden"
                 data-testid="voice-active-controls-presence"
-                initial={{ height: 0 }}
-                animate={{ height: "auto" }}
-                exit={{ height: 0 }}
+                initial={{ height: 0, overflow: "hidden" }}
+                animate={{
+                  height: "auto",
+                  transitionEnd: { overflow: "visible" },
+                }}
+                exit={{ height: 0, overflow: "hidden" }}
                 transition={{ duration: 0.48, ease: [0.22, 1, 0.36, 1] }}
               >
                 <motion.div
