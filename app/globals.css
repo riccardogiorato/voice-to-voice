@@ -243,6 +243,30 @@ button {
   overflow: hidden;
 }
 
+.conversation-stream::before,
+.conversation-stream::after {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  left: 0;
+  height: 34px;
+  content: "";
+  pointer-events: none;
+  backdrop-filter: blur(7px);
+}
+
+.conversation-stream::before {
+  top: 0;
+  background: linear-gradient(180deg, rgba(253, 252, 249, 0.94), rgba(253, 252, 249, 0));
+  mask-image: linear-gradient(180deg, #000 10%, transparent 100%);
+}
+
+.conversation-stream::after {
+  bottom: 0;
+  background: linear-gradient(0deg, rgba(253, 252, 249, 0.96), rgba(253, 252, 249, 0));
+  mask-image: linear-gradient(0deg, #000 10%, transparent 100%);
+}
+
 .voice-message-bubble {
   position: relative;
   border-radius: 20px;

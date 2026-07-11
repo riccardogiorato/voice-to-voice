@@ -13,15 +13,15 @@ const phaseCopy: Record<VoiceConversation["phase"], { label: string; detail: str
     detail: "Opening",
   },
   listening: {
-    label: "Listening",
+    label: "I’m listening…",
     detail: "Live",
   },
   thinking: {
-    label: "Thinking",
+    label: "Thinking...",
     detail: "Working",
   },
   speaking: {
-    label: "Speaking",
+    label: "...",
     detail: "Replying",
   },
 };
@@ -31,7 +31,7 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
     voice.muted && voice.isActive
       ? { label: "Muted", detail: "Tap the mic to resume" }
       : !voice.isActive && voice.turns.length > 0
-        ? { label: "Call ended", detail: "Resume or start new" }
+        ? { label: "Ready when you are", detail: "Resume or start new" }
         : phaseCopy[voice.phase];
   const waveformVisible = voice.userSpeaking && !voice.muted;
   const micMeterVisible = voice.isActive && !voice.muted;

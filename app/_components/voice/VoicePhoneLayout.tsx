@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { useState, type MouseEvent, type Ref } from "react";
+import { useState, type Ref } from "react";
 import type { ConversationTimelineItem } from "@/app/_hooks/useVoiceConversation";
 import { VoiceActiveControls, VoiceEndedControls } from "./Controls";
 import { VoiceConversationStream } from "./ConversationStream";
@@ -54,14 +54,8 @@ export function VoicePhoneLayout({
 }: VoicePhoneLayoutProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(true);
-  const canStartFromSurface = !isActive && !settingsOpen;
   const hasFooterControls = isActive || hasTurns;
   const hasContentBelowMessages = Boolean(error) || hasFooterControls;
-
-  function handleSurfaceClick(event: MouseEvent<HTMLElement>) {
-    if (!canStartFromSurface || isInteractiveTarget(event.target)) return;
-    void onStart?.();
-  }
 
   return (
     <section
@@ -69,8 +63,7 @@ export function VoicePhoneLayout({
         embedded
           ? "h-[720px] shadow-[0_0_0_10px_#050505,0_24px_70px_rgba(5,5,5,0.18)]"
           : "min-h-dvh lg:h-[min(860px,calc(100dvh-48px))] lg:min-h-0 lg:max-w-[430px] lg:shadow-[0_0_0_10px_#050505,0_24px_70px_rgba(5,5,5,0.22)]"
-      } ${canStartFromSurface ? "cursor-pointer" : ""}`}
-      onClick={handleSurfaceClick}
+      }`}
     >
       <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(198,168,244,0.18),rgba(255,255,255,0)_24%),radial-gradient(circle_at_100%_5%,rgba(239,44,193,0.12),transparent_24%)]" />
 
@@ -190,16 +183,5 @@ export function VoicePhoneLayout({
         </div>
       </div>
     </section>
-  );
-}
-
-function isInteractiveTarget(target: EventTarget | null) {
-  return (
-    target instanceof Element &&
-    Boolean(
-      target.closest(
-        'a,button,input,textarea,select,summary,[role="button"],[contenteditable="true"]',
-      ),
-    )
   );
 }
