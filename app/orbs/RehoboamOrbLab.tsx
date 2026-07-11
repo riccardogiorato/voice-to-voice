@@ -40,6 +40,8 @@ uniform float u_variant;
 uniform float u_motion;
 uniform float u_phase;
 uniform float u_activity;
+uniform float u_thickness;
+uniform float u_presence;
 uniform vec3 u_lavender;
 uniform vec3 u_magenta;
 uniform vec3 u_orange;
@@ -181,11 +183,19 @@ void main() {
     float layerRadius = baseRadius + wave * (0.008 + fi * 0.0018);
     float dotCell = hash21(vec2(floor(polarX * 1050.0), fi * 19.0));
     float stripe = 0.18 + 0.82 * pow(0.5 + 0.5 * cos(fi * 0.83 + time * 1.2), 10.0);
-    float pointLayer = stroke(abs(radius - layerRadius), 0.0015, 0.0035) * step(0.22, dotCell) * stripe;
+    float pointLayer = stroke(
+      abs(radius - layerRadius),
+      0.0015 * u_thickness,
+      0.0035 * u_thickness
+    ) * step(0.22, dotCell) * stripe;
     cloud += pointLayer;
     float tukey = eventA * smoothstep(0.0, 0.12, eventA) + eventB * 0.7;
     float divergentRadius = layerRadius + tukey * wave * (0.05 + fi * 0.0045);
-    cloudDivergence += stroke(abs(radius - divergentRadius), 0.0015, 0.0035) * step(0.3, dotCell) * tukey;
+    cloudDivergence += stroke(
+      abs(radius - divergentRadius),
+      0.0015 * u_thickness,
+      0.0035 * u_thickness
+    ) * step(0.3, dotCell) * tukey;
   }
 
   // Connecting assembles the perimeter from three bright orbiting arcs.
@@ -195,7 +205,11 @@ void main() {
     float arcCenter = -PI + fi * TAU / 3.0 + time * 0.72;
     float arcWindow = exp(-pow(angleDistance(angle, arcCenter) / 0.36, 2.0) * 2.0);
     float arcRadius = baseRadius + sin(time * 1.4 + fi * 2.1) * 0.006;
-    connectingArcs += stroke(abs(radius - arcRadius), 0.005, 0.009) * arcWindow;
+    connectingArcs += stroke(
+      abs(radius - arcRadius),
+      0.005 * u_thickness,
+      0.009 * u_thickness
+    ) * arcWindow;
   }
 
   // Thinking stays close to the shared silhouette. Two faint, partial inner
@@ -207,7 +221,11 @@ void main() {
     float thoughtRadius = 0.43 + fi * 0.065 + sin(angle * (2.0 + fi) + time * direction * 1.25) * 0.007;
     float segment = pow(0.5 + 0.5 * sin(angle * (2.0 + fi) + time * direction * 0.9), 4.0);
     float shimmer = 0.2 + 0.8 * noise(vec2(polarX * 6.0 + time * direction * 0.16, fi * 5.3));
-    thoughtRipples += stroke(abs(radius - thoughtRadius), 0.0015, 0.01) * segment * shimmer;
+    thoughtRipples += stroke(
+      abs(radius - thoughtRadius),
+      0.0015 * u_thickness,
+      0.01 * u_thickness
+    ) * segment * shimmer;
   }
 
   float cloudInk = cloud * 0.72 + cloudDivergence * 0.86;
@@ -251,7 +269,7 @@ void main() {
   alpha += min(titleInk, 0.98) * titlecard;
 
   float phaseOpacity = idle * 0.7 + connecting * 0.85 + listening * 0.9 + thinking * 0.95 + replying;
-  fragColor = vec4(color, min(alpha * phaseOpacity, 0.98));
+  fragColor = vec4(color, min(alpha * phaseOpacity * u_presence, 0.98));
 }`;
 
 type GlContext = {
@@ -263,6 +281,8 @@ type GlContext = {
     motion: WebGLUniformLocation | null;
     phase: WebGLUniformLocation | null;
     activity: WebGLUniformLocation | null;
+    thickness: WebGLUniformLocation | null;
+    presence: WebGLUniformLocation | null;
     lavender: WebGLUniformLocation | null;
     magenta: WebGLUniformLocation | null;
     orange: WebGLUniformLocation | null;
@@ -327,6 +347,8 @@ function createContext(canvas: HTMLCanvasElement): GlContext | null {
       motion: gl.getUniformLocation(program, "u_motion"),
       phase: gl.getUniformLocation(program, "u_phase"),
       activity: gl.getUniformLocation(program, "u_activity"),
+      thickness: gl.getUniformLocation(program, "u_thickness"),
+      presence: gl.getUniformLocation(program, "u_presence"),
       lavender: gl.getUniformLocation(program, "u_lavender"),
       magenta: gl.getUniformLocation(program, "u_magenta"),
       orange: gl.getUniformLocation(program, "u_orange"),
@@ -339,11 +361,15 @@ function RehoboamCanvas({
   phase,
   playing,
   activity = 0.45,
+  thickness = 1,
+  presence = 1,
 }: {
   variant: number;
   phase: number;
   playing: boolean;
   activity?: number;
+  thickness?: number;
+  presence?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const contextRef = useRef<GlContext | null>(null);
@@ -408,13 +434,15 @@ function RehoboamCanvas({
     gl.uniform1f(uniforms.motion, motionSpeed);
     gl.uniform1f(uniforms.phase, displayedPhaseRef.current);
     gl.uniform1f(uniforms.activity, displayedActivityRef.current);
+    gl.uniform1f(uniforms.thickness, thickness);
+    gl.uniform1f(uniforms.presence, presence);
     gl.uniform3f(uniforms.lavender, 0.78, 0.66, 0.96);
     gl.uniform3f(uniforms.magenta, 0.94, 0.17, 0.76);
     gl.uniform3f(uniforms.orange, 0.99, 0.3, 0.01);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     frameRef.current = window.requestAnimationFrame(render);
-  }, []);
+  }, [presence, thickness]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -469,6 +497,8 @@ export function RiemannTukeyVoiceOrb({
         variant={2}
         phase={PRODUCTION_PHASE[phase]}
         activity={normalizedActivity}
+        thickness={3}
+        presence={1.25}
         playing
       />
     </div>
