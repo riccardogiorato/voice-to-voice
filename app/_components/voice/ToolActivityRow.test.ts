@@ -42,7 +42,7 @@ test("describes a running search conversationally", () => {
   ).toEqual({
     icon: "search",
     label: "I’m looking that up…",
-    text: "I’m looking that up…",
+    text: "I’m searching for “weather in Venice”",
   });
 });
 
@@ -57,7 +57,7 @@ test("turns search results into a human-readable completion", () => {
     }),
   ).toMatchObject({
     label: "I found the information.",
-    text: "I found two results.",
+    text: "I found two results for “weather in Venice”.",
   });
 });
 
@@ -66,11 +66,25 @@ test("explains the fallback when a search fails", () => {
     getToolActivityPresentation({
       id: "call_search",
       name: "web_search",
+      input: "recent benchmark source",
       status: "failed",
       summary: "Search timed out",
     }),
   ).toMatchObject({
-    text: "I couldn’t reach that just now.",
+    text: "I couldn’t search for “recent benchmark source”.",
     fallback: "I’ll answer from what I know.",
   });
+});
+
+test("truncates long search queries", () => {
+  const query = "a".repeat(80);
+
+  expect(
+    getToolActivityPresentation({
+      id: "call_search",
+      name: "web_search",
+      input: query,
+      status: "running",
+    }).text,
+  ).toBe(`I’m searching for “${"a".repeat(59)}…”`);
 });

@@ -59,12 +59,14 @@ const TOOL_ICONS = {
 
 type ToolIconName = keyof typeof TOOL_ICONS;
 
+const MAX_SEARCH_QUERY_LENGTH = 60;
+
 export function getToolActivityPresentation(activity: ToolActivityItem) {
   const presentation = TOOL_PRESENTATIONS[activity.name] ?? FALLBACK_PRESENTATION;
   const label = presentation[activity.status];
   const text =
-    activity.status === "completed" && activity.name === "web_search"
-      ? getSearchCompletionText(activity.summary)
+    activity.name === "web_search"
+      ? getSearchActivityText(activity, label)
       : label;
 
   return {
@@ -77,11 +79,36 @@ export function getToolActivityPresentation(activity: ToolActivityItem) {
   };
 }
 
+function getSearchActivityText(activity: ToolActivityItem, fallback: string) {
+  const query = truncateSearchQuery(activity.input);
+  if (!query) {
+    return activity.status === "completed"
+      ? `${getSearchCompletionText(activity.summary)}.`
+      : fallback;
+  }
+
+  if (activity.status === "running") {
+    return `I’m searching for “${query}”`;
+  }
+  if (activity.status === "failed") {
+    return `I couldn’t search for “${query}”.`;
+  }
+  return `${getSearchCompletionText(activity.summary)} for “${query}”.`;
+}
+
 function getSearchCompletionText(summary?: string) {
   const count = summary?.match(/^(\d+) result(?:s)?\b/i)?.[1];
-  if (count === "1") return "I found one result.";
-  if (count && Number(count) > 1) return `I found ${numberToWord(Number(count))} results.`;
-  return "I found the information.";
+  if (count === "1") return "I found one result";
+  if (count && Number(count) > 1) {
+    return `I found ${numberToWord(Number(count))} results`;
+  }
+  return "I found the information";
+}
+
+function truncateSearchQuery(input?: string) {
+  const query = input?.trim();
+  if (!query || query.length <= MAX_SEARCH_QUERY_LENGTH) return query;
+  return `${query.slice(0, MAX_SEARCH_QUERY_LENGTH - 1).trimEnd()}…`;
 }
 
 function numberToWord(value: number) {
