@@ -1,142 +1,90 @@
-# Together Voice Demo
+# Together Voice-to-Voice v2
 
-A tiny voice-to-voice demo for Together AI:
+An OpenAI Realtime-compatible voice pipeline built from Together's serverless
+speech-to-text, chat, and text-to-speech models. The reusable TypeScript engine
+is framework-neutral; Node.js and Next.js adapters keep the transport layer
+thin.
 
-Browser mic -> Vercel WebSocket -> Together realtime STT -> Together chat streaming -> Together realtime TTS -> browser audio.
-
-The browser never receives the Together API key. It only connects to `/api/voice`.
-
-## Voice Pipeline TLDR
-
-The important trick is that the browser does local endpointing, while Together does the actual transcription, reply, and speech generation. A speech segment ending is not always a full user turn ending: the server can pause a pending answer when the browser says speech started again.
-
-```mermaid
-sequenceDiagram
-  autonumber
-
-  box rgb(238, 247, 255) Browser
-    participant B as Browser<br/>TEN VAD + UI
-  end
-
-  box rgb(255, 246, 226) Server
-    participant S as /api/voice
-  end
-
-  box rgb(239, 249, 236) Together
-    participant T as Together models
-  end
-
-  B->>S: speech.started
-  B->>S: audio.input chunks
-  S->>T: STT: nvidia/nemotron-3-asr-streaming-0.6b
-  S->>B: transcript.delta
-
-  B->>S: audio.commit
-  S->>T: repair: Qwen/Qwen3.5-9B
-  S->>B: transcript.final
-
-  S->>T: reply: Qwen/Qwen2.5-7B-Instruct-Turbo
-  S->>T: TTS: cartesia/sonic-3
-  S->>B: assistant text + audio
+```text
+PCM16 microphone -> Together STT -> AI SDK tool-capable reply -> Together TTS -> PCM16 audio
 ```
 
-Current event flow in words:
+The Together API key stays on the server. Browsers first request a short-lived,
+stateless signed client secret, then authenticate the Realtime WebSocket with
+the same subprotocol shape used by the OpenAI Agents SDK.
 
-1. Browser microphone records audio.
-2. TEN VAD, loaded as WASM in the browser, decides when speech opens.
-3. The client immediately sends `speech.started` so the server can pause pending repair or reply work.
-4. The client buffers and streams `audio.input` chunks while speech is active.
-5. TEN VAD decides speech ended after short silence, then the client sends `audio.commit`.
-6. Together STT streams `transcript.delta` for provisional UI text, then `transcript.completed`.
-7. The server merges nearby speech segments, waits `REPLY_GRACE_MS`, repairs the full transcript, and sends `transcript.final`.
-8. The assistant reply uses the repaired transcript, streams text to the UI, and streams sentence chunks through TTS to browser playback.
+## Requirements
 
-## Run
+- Node.js 22 or newer
+- pnpm 11
+- `TOGETHER_API_KEY`
+- `TOGETHER_REALTIME_SECRET` in every non-local environment
 
 ```bash
-npm install
-npm run dev
+cp .env.example .env
+pnpm install
+pnpm test
+pnpm demo
 ```
 
-`npm run dev` is useful for UI work, but full voice mode needs a runtime that supports WebSocket upgrades. For the working voice demo, deploy to Vercel.
+Open <http://localhost:3000>, allow microphone access, and connect. The demo
+uses `@openai/agents` with a local function tool against the custom Realtime
+URL.
 
-Create `.env` with:
+For a transport-only browser smoke test that must not capture ambient audio,
+open <http://localhost:3000/?smoke=1>. It uses the same Agents SDK connection
+and session configuration but deliberately skips `getUserMedia`.
+
+## Workspace
+
+- `packages/realtime` - engine, Together provider, stateless client secrets,
+  OpenAI-compatible session state, Node adapter, and Next adapter
+- `examples/demo` - Next.js browser demo and paid public-endpoint black-box suite
+- `docs/compatibility.md` - supported, ignored, and rejected contract surface
+- `docs/deployment.md` - local container, Vercel, and Railway guidance
+- `docs/verification.md` - dated deterministic, paid-network, browser, and catalog evidence
+
+The example models are deliberately explicit, with no fallback:
+
+| Stage | Model | Live Together catalog check |
+| --- | --- | --- |
+| STT | `openai/whisper-large-v3` | present as `transcribe` on 2026-07-14 |
+| Reply | `Qwen/Qwen3.5-9B` | present as `chat`, 262,144-token context on 2026-07-14 |
+| TTS | `cartesia/sonic-3` | present in the live serverless catalog and paid WebSocket probe on 2026-07-14 |
+
+Applications must pass all three model IDs and the reply context window when
+constructing the engine. A provider error is surfaced; the engine never changes
+models silently. The example disables Qwen's optional reasoning mode in the
+server-side Together request so voice replies do not spend the output budget on
+hidden thinking before producing speakable text.
+
+The demo voice `nonfiction man` was also confirmed by the live Sonic 3
+WebSocket on 2026-07-14. The package requires an explicit default because voice
+catalogs are model-specific.
+
+## Verification
 
 ```bash
-TOGETHER_API_KEY=...
+pnpm typecheck
+pnpm build
+pnpm test
+pnpm test:e2e
+pnpm demo
 ```
 
-Optional model overrides:
+`pnpm test` is deterministic and uses fake providers. `pnpm test:e2e` is
+explicitly paid/networked: it starts the demo, obtains a client secret over
+HTTP, and drives the WebSocket like a browser using only public endpoints. It
+checks manual commit, server VAD, function-tool continuation, barge-in, PCM16
+audio, event ordering, and a nonfatal protocol error. Provider mocks are not
+treated as integration proof.
 
-```bash
-TOGETHER_STT_MODEL=nvidia/nemotron-3-asr-streaming-0.6b
-TOGETHER_STT_FALLBACK_MODEL=openai/whisper-large-v3
-TOGETHER_CHAT_MODEL=Qwen/Qwen2.5-7B-Instruct-Turbo
-TOGETHER_TTS_MODEL=cartesia/sonic-3
-TOGETHER_TTS_VOICE=nonfiction man
-TOGETHER_TTS_FALLBACK_MODEL=hexgrad/Kokoro-82M
-TOGETHER_TTS_FALLBACK_VOICE=af_heart
-```
+## Package usage
 
-`Qwen/Qwen2.5-7B-Instruct-Turbo` is the default chat model because it reliably streams speakable assistant text for short voice turns. The route keeps `max_tokens` tight and forwards text to TTS sentence by sentence so the UI can show text while audio is generated.
+See [`packages/realtime/README.md`](packages/realtime/README.md) for the engine
+API and complete Node.js and Next.js adapter examples. The tested OpenAI Agents
+SDK version is `0.13.3`; compatibility outside the matrix is not implied.
 
-## Deploy
-
-Deploy to Vercel and set `TOGETHER_API_KEY` in the project environment:
-
-```bash
-vercel env add TOGETHER_API_KEY
-vercel deploy
-```
-
-For a production URL:
-
-```bash
-vercel deploy --prod
-```
-
-This uses Vercel's `experimental_upgradeWebSocket()` API for Next.js App Router. WebSockets require Fluid Compute and are governed by Vercel Function max duration. The route exports `maxDuration = 660`, while the app ends calls cleanly after 10 minutes to leave a 60-second shutdown buffer.
-
-### Why the function region is pinned to `iad1`
-
-`vercel.json` pins the function to `iad1` (US East). This was measured, not guessed (2026-07-08, probe function timing warm requests to `api.together.ai`):
-
-| Function region | Warm RTT to Together API | First audio, measured from Europe |
-| --------------- | ------------------------ | --------------------------------- |
-| `iad1` (US East) | ~131 ms | **~1.2–1.3 s** |
-| `sfo1` (US West) | ~78 ms | ~1.4–1.5 s |
-
-Together's serverless inference origin is US West (behind Cloudflare), so `sfo1` is closest to the models — but the orchestrator talks to **both** sides: each turn is one client<->function exchange plus several function<->Together round trips. For users outside the US West coast, `iad1` sits between them and the models and wins end to end.
-
-Rules of thumb:
-
-- Keep the orchestrator near the model APIs, not near the user — the user leg is one streaming WebSocket, the Together leg is many round trips per turn.
-- Demoing to a US West audience? Switch `regions` to `["sfo1"]` and redeploy; for users in SF both legs shorten and first audio should drop well under 1 s.
-- Re-measure after any region change with `npm run test:voice -- <url>` (see below).
-
-## Files
-
-- `app/page.tsx` - mobile-first voice UI, mic capture, WebSocket client, PCM playback
-- `app/api/voice/route.ts` - server-side WebSocket that hides the API key and orchestrates Together STT/chat/TTS
-
-## End-to-end voice test
-
-`scripts/e2e-voice-latency.mjs` drives a full voice turn over the deployed `/api/voice` WebSocket and reports per-stage latencies (STT, time-to-first-assistant-token, first audio, total) plus content/audio sanity checks. It requires a **deployed URL** — local `next dev` does not support WebSocket upgrades, so run it against your Vercel deployment.
-
-```bash
-npm run test:voice -- https://your-app.vercel.app
-# or a full wss URL:
-npm run test:voice -- wss://your-app.vercel.app/api/voice
-```
-
-On first run it auto-synthesizes the `test-fixtures/hello-16k.pcm` fixture via Together REST TTS (`hexgrad/Kokoro-82M`), so `TOGETHER_API_KEY` must be available (exported or in `.env`) for that one-time step. The fixture is reused on subsequent runs.
-
-Latency budgets are tunable with env vars (defaults shown):
-
-```bash
-BUDGET_STT_MS=4000         # transcript.final within this after audio.commit
-BUDGET_FIRST_AUDIO_MS=7000 # first audio.delta within this after audio.commit
-BUDGET_TOTAL_MS=20000      # audio.done within this after audio.commit
-```
-
-Full results are written to `bench-results/voice-e2e-<timestamp>.json`. The script exits `0` only if every assertion passes, `1` otherwise.
+This v2 core intentionally has no telemetry, rate limiter, persistence,
+database, or distributed session coordination. Session state lives in the
+process that owns the WebSocket.

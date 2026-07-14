@@ -1,0 +1,35 @@
+{
+  "name": "@together/realtime-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "predev": "pnpm --filter @together/realtime build",
+    "dev": "tsx server.ts",
+    "build": "next build",
+    "start": "NODE_ENV=production tsx server.ts",
+    "pretypecheck": "pnpm --filter @together/realtime build",
+    "typecheck": "tsc --noEmit",
+    "pretest:e2e": "pnpm --filter @together/realtime build",
+    "test:e2e": "tsx e2e/black-box.ts"
+  },
+  "dependencies": {
+    "@openai/agents": "0.13.3",
+    "@together/realtime": "workspace:*",
+    "next": "16.2.10",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.0",
+    "ws": "8.21.0"
+  }
+}
