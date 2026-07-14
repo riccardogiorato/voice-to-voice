@@ -134,8 +134,12 @@ export default function Home() {
           <img className="together-logo" src="/together-logo.svg" alt="Together AI" />
           <span>Realtime v2</span>
         </div>
-        <h1>OpenAI Agents SDK.<br />Together voice pipeline.</h1>
-        <p className="lede">A local proof of the OpenAI-compatible WebSocket contract, client secrets, function tools, VAD, PCM16 audio, and barge-in.</p>
+        <h1>Same OpenAI voice agent.<br />Now on Together.</h1>
+        <p className="lede">Keep <code>@openai/agents/realtime</code>, your agent, and your tools. Change two URLs to run the same realtime voice flow on Together.</p>
+        <ol className="switches" aria-label="Two changes to use Together">
+          <li><span>1</span><div><strong>Client secret</strong><code>/api/realtime/client_secrets</code></div></li>
+          <li><span>2</span><div><strong>WebSocket</strong><code>/api/realtime</code></div></li>
+        </ol>
         <div className="controls">
           {status === "Disconnected" ? (
             <button className="primary" onClick={() => void connect().catch((error) => { setStatus("Failed"); log(String(error)); })}>Connect microphone</button>

@@ -111,17 +111,76 @@ h1 {
 .lede {
   max-width: 670px;
   margin: 0;
-  color: #435262;
+  color: #344251;
   font-size: clamp(1.05rem, 2vw, 1.35rem);
   line-height: 1.55;
   text-wrap: pretty;
+}
+
+.lede code {
+  color: #000000;
+  font-size: 0.88em;
+  font-weight: 650;
+}
+
+.switches {
+  width: min(100%, 670px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 1.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.switches li {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1), 0 4px 16px rgba(0, 0, 0, 0.05);
+}
+
+.switches li > span {
+  width: 1.8rem;
+  height: 1.8rem;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  color: #000000;
+  background: var(--purple);
+  font-size: 0.78rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.switches div {
+  min-width: 0;
+  display: grid;
+  gap: 0.18rem;
+}
+
+.switches strong {
+  font-size: 0.78rem;
+}
+
+.switches code {
+  overflow: hidden;
+  color: #52616f;
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .controls {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  margin-top: 2.25rem;
+  margin-top: 1.5rem;
 }
 
 button {
@@ -160,26 +219,28 @@ button:disabled {
 }
 
 button.primary {
-  color: #000000;
-  background: var(--magenta);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1), 0 8px 22px rgba(239, 44, 193, 0.23);
+  color: #ffffff;
+  background: #000000;
+  box-shadow: 0 0 0 1px #000000, 0 8px 22px rgba(94, 134, 174, 0.22);
   font-weight: 780;
 }
 
 button.primary:hover:not(:disabled) {
-  background: #f247c8;
-  box-shadow: 0 0 0 2px var(--orange), 0 10px 26px rgba(239, 44, 193, 0.27);
+  color: #ffffff;
+  background: #242126;
+  box-shadow: 0 0 0 3px var(--orange), 0 10px 26px rgba(94, 134, 174, 0.24);
 }
 
 button.live {
-  color: #000000;
-  background: var(--orange);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1), 0 8px 22px rgba(252, 76, 2, 0.22);
+  color: #ffffff;
+  background: #000000;
+  box-shadow: 0 0 0 2px var(--orange), 0 8px 22px rgba(252, 76, 2, 0.2);
 }
 
 button.live:hover:not(:disabled) {
-  background: #ff6726;
-  box-shadow: 0 0 0 2px var(--magenta), 0 10px 26px rgba(252, 76, 2, 0.26);
+  color: #ffffff;
+  background: #242126;
+  box-shadow: 0 0 0 3px var(--orange), 0 10px 26px rgba(252, 76, 2, 0.24);
 }
 
 .mode {
@@ -205,11 +266,11 @@ button.live:hover:not(:disabled) {
 aside {
   min-width: 0;
   padding: 3rem 2rem;
-  border-left: 1px solid rgba(255, 255, 255, 0.14);
-  color: #ffffff;
+  border-left: 1px solid rgba(0, 0, 0, 0.08);
+  color: #000000;
   background:
-    radial-gradient(circle at 100% 0, rgba(94, 134, 174, 0.3), transparent 22rem),
-    linear-gradient(165deg, #17131b 0%, #000000 52%);
+    radial-gradient(circle at 100% 0, rgba(61, 153, 245, 0.28), transparent 22rem),
+    linear-gradient(165deg, #f7f1ff 0%, #e5f4ff 100%);
 }
 
 .status {
@@ -235,7 +296,7 @@ aside {
 
 h2 {
   margin: 3rem 0 1rem;
-  color: var(--purple);
+  color: #5a277b;
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.14em;
@@ -252,14 +313,14 @@ h2 {
 }
 
 .log code {
-  color: #84dfe4;
+  color: #006b72;
   font-size: 0.78rem;
   white-space: nowrap;
 }
 
 .log p,
 .hint {
-  color: #aab5c0;
+  color: #3e4d5c;
   font-size: 0.85rem;
   line-height: 1.5;
   text-wrap: pretty;
@@ -267,7 +328,7 @@ h2 {
 
 .hint {
   padding-top: 1rem;
-  border-top: 1px solid rgba(202, 174, 245, 0.22);
+  border-top: 1px solid rgba(0, 0, 0, 0.12);
 }
 
 @media (max-width: 850px) {
@@ -289,8 +350,12 @@ h2 {
 
   aside {
     min-height: 32vh;
-    border-top: 1px solid rgba(255, 255, 255, 0.14);
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
     border-left: 0;
+  }
+
+  .switches {
+    grid-template-columns: 1fr;
   }
 
   .log {
