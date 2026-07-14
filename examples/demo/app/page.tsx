@@ -130,7 +130,10 @@ export default function Home() {
   return (
     <main>
       <section className="hero">
-        <p className="eyebrow">TOGETHER AI · REALTIME V2</p>
+        <div className="eyebrow">
+          <img className="together-logo" src="/together-logo.svg" alt="Together AI" />
+          <span>Realtime v2</span>
+        </div>
         <h1>OpenAI Agents SDK.<br />Together voice pipeline.</h1>
         <p className="lede">A local proof of the OpenAI-compatible WebSocket contract, client secrets, function tools, VAD, PCM16 audio, and barge-in.</p>
         <div className="controls">
