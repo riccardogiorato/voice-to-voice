@@ -51,3 +51,9 @@ ideas.md
 
 session-export-1783507817308/*
 test-fixtures/*
+
+#from v2 branch
+/e2e-results
+/examples/demo
+/packages/realtime/dist
+/packages/realtime/node_modules
