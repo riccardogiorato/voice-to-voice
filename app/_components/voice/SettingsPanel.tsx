@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { ChevronDown, Clipboard, Cpu } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { cx } from "./utils";
@@ -72,6 +73,12 @@ export function VoiceSettingsPanel({
               }}
               transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             >
+              <Link
+                className="mt-2 flex min-h-10 w-full items-center justify-center rounded-full bg-[#050505]/6 px-4 py-2.5 text-sm font-semibold text-[#050505] transition-[scale,background-color] duration-150 hover:bg-[#050505]/10 active:scale-[0.96]"
+                href="/stt-playground"
+              >
+                Compare speech-to-text
+              </Link>
               <button
                 className="mt-2 flex w-full items-center justify-center gap-2 rounded-full bg-[#050505] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(5,5,5,0.16)] transition-[scale,background-color] duration-150 active:scale-[0.96]"
                 type="button"
