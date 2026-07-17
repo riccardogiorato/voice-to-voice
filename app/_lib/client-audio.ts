@@ -235,11 +235,11 @@ export function normalizeRange(value: number, floor: number, ceiling: number) {
   return clamp01((value - floor) / (ceiling - floor));
 }
 
-export function createInteractiveAudioContext() {
+export function createInteractiveAudioContext(sampleRate?: number) {
   const AudioContextCtor =
     window.AudioContext ?? (window as WindowWithAudioContext).webkitAudioContext;
   if (!AudioContextCtor) throw new Error("Web Audio is not available in this browser.");
-  return new AudioContextCtor({ latencyHint: "interactive" });
+  return new AudioContextCtor({ latencyHint: "interactive", sampleRate });
 }
 
 export function createThinkingSound(

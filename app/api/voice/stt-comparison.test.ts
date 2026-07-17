@@ -27,7 +27,7 @@ test("lists every public serverless STT model and keeps Inkling visible", async 
     "inkling",
   ]);
   expect(models.at(-1)).toMatchObject({
-    kind: "inkling",
+    kind: "audio-chat",
     model: "thinkingmachines/inkling",
   });
 });
@@ -50,8 +50,8 @@ test("transcribes one requested model without waiting for a slow sibling", async
         expect(model).toBe("openai/whisper-large-v3");
         return "Hello from Whisper";
       },
-      transcribeInkling: async () => {
-        throw new Error("Inkling must not be called for the Whisper request.");
+      transcribeAudioChat: async () => {
+        throw new Error("Audio chat must not be called for the Whisper request.");
       },
     },
   );
@@ -68,12 +68,16 @@ test("returns a card-local error instead of throwing", async () => {
     new Uint8Array([1, 0]),
     {
       id: "inkling",
-      kind: "inkling",
+      kind: "audio-chat",
       label: "Inkling",
       model: "thinkingmachines/inkling",
     },
     "test-key",
-    { transcribeInkling: async () => { throw new Error("Inkling unavailable"); } },
+    {
+      transcribeAudioChat: async () => {
+        throw new Error("Inkling unavailable");
+      },
+    },
   );
 
   expect(result.error).toBe("Inkling unavailable");

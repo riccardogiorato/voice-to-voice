@@ -14,7 +14,6 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   concatFloat32,
   createInteractiveAudioContext,
-  createMicWorkletUrl,
   pcm16Base64FromFloat32,
   pcm16WavBlobFromBase64,
 } from "@/app/_lib/client-audio";
@@ -37,7 +36,6 @@ type Recorder = {
   nodes: AudioNode[];
   stream: MediaStream;
   samples: Float32Array[];
-  workletUrl?: string;
 };
 
 type Status = "idle" | "preparing" | "recording" | "analyzing" | "error";
@@ -84,7 +82,6 @@ export function SttPlayground() {
     for (const node of recorder.nodes) node.disconnect();
     for (const track of recorder.stream.getTracks()) track.stop();
     void recorder.audioContext.close();
-    if (recorder.workletUrl) URL.revokeObjectURL(recorder.workletUrl);
     return recorder;
   };
 
@@ -139,9 +136,11 @@ export function SttPlayground() {
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
+          sampleRate: { ideal: STT_PLAYGROUND_SAMPLE_RATE },
+          sampleSize: { ideal: 16 },
         },
       });
-      const audioContext = createInteractiveAudioContext();
+      const audioContext = createInteractiveAudioContext(STT_PLAYGROUND_SAMPLE_RATE);
       pendingStream = stream;
       pendingAudioContext = audioContext;
       await audioContext.resume();
@@ -150,30 +149,18 @@ export function SttPlayground() {
       silentGain.gain.value = 0;
       const samples: Float32Array[] = [];
       const nodes: AudioNode[] = [source, silentGain];
-      let workletUrl: string | undefined;
-
-      if (audioContext.audioWorklet) {
-        workletUrl = createMicWorkletUrl();
-        await audioContext.audioWorklet.addModule(workletUrl);
-        const worklet = new AudioWorkletNode(audioContext, "mic-capture");
-        worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
-          samples.push(event.data);
-        };
-        source.connect(worklet);
-        worklet.connect(silentGain);
-        nodes.push(worklet);
-      } else {
-        const processor = audioContext.createScriptProcessor(2048, 1, 1);
-        processor.onaudioprocess = (event) => {
-          samples.push(new Float32Array(event.inputBuffer.getChannelData(0)));
-        };
-        source.connect(processor);
-        processor.connect(silentGain);
-        nodes.push(processor);
-      }
+      // Capture immediately after the stream is available. Awaiting a worklet module here
+      // was making the first words after a press unreachable by the recorder.
+      const processor = audioContext.createScriptProcessor(1024, 1, 1);
+      processor.onaudioprocess = (event) => {
+        samples.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+      };
+      source.connect(processor);
+      processor.connect(silentGain);
+      nodes.push(processor);
       silentGain.connect(audioContext.destination);
 
-      recorderRef.current = { audioContext, nodes, stream, samples, workletUrl };
+      recorderRef.current = { audioContext, nodes, stream, samples };
       pendingStream = null;
       pendingAudioContext = null;
       if (!holdRef.current) {
@@ -433,6 +420,7 @@ export function SttPlayground() {
           <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {displayedModels.map((model, index) => {
               const modelState = modelStates[model.id];
+              const isAudioChat = model.kind === "audio-chat";
               const result =
                 modelState?.status === "completed" ? modelState.result : undefined;
               return (
@@ -440,7 +428,7 @@ export function SttPlayground() {
                   key={model.id}
                   className={cx(
                     "min-h-56 rounded-[24px] bg-white p-5 shadow-[0_1px_2px_rgba(20,16,32,0.04),0_12px_30px_rgba(51,36,85,0.06)]",
-                    model.id === "inkling" && "bg-[#211336] text-white",
+                    isAudioChat && "bg-[#f1ebff]",
                   )}
                   initial={false}
                   animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
@@ -452,7 +440,7 @@ export function SttPlayground() {
                       <p
                         className={cx(
                           "mt-1 break-all font-mono text-[11px] leading-4 text-[#151320]/42",
-                          model.id === "inkling" && "text-white/48",
+                          isAudioChat && "text-[#513087]/58",
                         )}
                       >
                         {model.model}
@@ -462,7 +450,7 @@ export function SttPlayground() {
                       <span
                         className={cx(
                           "shrink-0 rounded-full bg-[#151320]/5 px-2 py-1 font-mono text-[11px] tabular-nums text-[#151320]/55",
-                          model.id === "inkling" && "bg-white/10 text-white/62",
+                          isAudioChat && "bg-[#8e35d5]/10 text-[#513087]/70",
                         )}
                       >
                         {formatLatency(result.latencyMs)}
@@ -472,7 +460,7 @@ export function SttPlayground() {
                   <div
                     className={cx(
                       "mt-7 text-base leading-7 text-[#151320]/82 text-pretty",
-                      model.id === "inkling" && "text-white/86",
+                      isAudioChat && "text-[#35214f]/86",
                     )}
                   >
                     {modelState?.status === "pending" ? (
@@ -489,7 +477,7 @@ export function SttPlayground() {
                     ) : hasModelStates ? (
                       "No transcript returned."
                     ) : (
-                      <span className={model.id === "inkling" ? "text-white/44" : "text-[#151320]/36"}>
+                      <span className={isAudioChat ? "text-[#513087]/52" : "text-[#151320]/36"}>
                         Ready to compare.
                       </span>
                     )}

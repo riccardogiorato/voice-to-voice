@@ -3,7 +3,6 @@ import {
   buildInklingAudioRequest,
   createInklingAudioCompletion,
   pcm16ToWav,
-  TOGETHER_INKLING_MODEL,
   TOGETHER_MODELS_URL,
 } from "./inkling";
 import { cleanTranscript } from "./voice-utils";
@@ -78,10 +77,10 @@ export async function getSttComparisonModels({
       .map((entry) => toComparisonModel(entry as TogetherCatalogModel))
       .filter((entry): entry is SttComparisonModel => entry !== null)
       .sort((left, right) => left.label.localeCompare(right.label));
-    const inkling = STT_PLAYGROUND_FALLBACK_MODELS.find(
-      (entry) => entry.kind === "inkling",
+    const audioChatModels = STT_PLAYGROUND_FALLBACK_MODELS.filter(
+      (entry) => entry.kind === "audio-chat",
     );
-    const models = inkling ? [...realtime, inkling] : realtime;
+    const models = [...realtime, ...audioChatModels];
     if (!models.length) throw new Error("Together returned no serverless STT models.");
 
     catalogCache = { expiresAt: now() + MODEL_CATALOG_CACHE_MS, models };
@@ -97,19 +96,19 @@ export async function transcribeSttComparisonModel(
   apiKey: string,
   dependencies: {
     now?: () => number;
-    transcribeInkling?: typeof transcribeInklingModel;
+    transcribeAudioChat?: typeof transcribeAudioChatModel;
     transcribeRealtime?: typeof transcribeRealtimeModel;
   } = {},
 ): Promise<SttComparisonResult> {
   const now = dependencies.now ?? performance.now.bind(performance);
   const startedAt = now();
   const realtime = dependencies.transcribeRealtime ?? transcribeRealtimeModel;
-  const inkling = dependencies.transcribeInkling ?? transcribeInklingModel;
+  const audioChat = dependencies.transcribeAudioChat ?? transcribeAudioChatModel;
 
   try {
     const transcript =
-      entry.kind === "inkling"
-        ? await inkling(pcm16, apiKey)
+      entry.kind === "audio-chat"
+        ? await audioChat(pcm16, entry.model, apiKey)
         : await realtime(pcm16, entry.model, apiKey);
     const cleanedTranscript = cleanTranscript(transcript);
     if (!cleanedTranscript) {
@@ -224,7 +223,11 @@ export function transcribeRealtimeModel(
   });
 }
 
-export async function transcribeInklingModel(pcm16: Uint8Array, apiKey: string) {
+export async function transcribeAudioChatModel(
+  pcm16: Uint8Array,
+  model: string,
+  apiKey: string,
+) {
   const wav = pcm16ToWav(pcm16, STT_PLAYGROUND_SAMPLE_RATE);
   const request = buildInklingAudioRequest({
     audio: {
@@ -237,7 +240,7 @@ export async function transcribeInklingModel(pcm16: Uint8Array, apiKey: string) 
       "Transcribe the spoken audio exactly. Return only " +
       "<transcript>the exact spoken words</transcript> and no other text.",
     maxTokens: 300,
-    model: TOGETHER_INKLING_MODEL,
+    model,
     system:
       "You are a multilingual speech transcription engine. Preserve the " +
       "speaker's language, names, wording, and hesitations. Never answer the speech.",
@@ -245,6 +248,6 @@ export async function transcribeInklingModel(pcm16: Uint8Array, apiKey: string) 
   const completion = await createInklingAudioCompletion({ apiKey, request });
   const match = completion.content.match(/<transcript>\s*([\s\S]*?)\s*<\/transcript>/i);
   const transcript = cleanTranscript(match?.[1] ?? completion.content);
-  if (!transcript) throw new Error("Inkling returned an empty transcript.");
+  if (!transcript) throw new Error(`${model} returned an empty transcript.`);
   return transcript;
 }

@@ -1,6 +1,6 @@
 export type SttComparisonModel = {
   id: string;
-  kind: "inkling" | "realtime";
+  kind: "audio-chat" | "realtime";
   label: string;
   model: string;
 };
@@ -38,8 +38,8 @@ export const STT_PLAYGROUND_FALLBACK_MODELS: SttComparisonModel[] = [
   },
   {
     id: "inkling",
-    kind: "inkling",
-    label: "Inkling",
+    kind: "audio-chat",
+    label: "Inkling FP4",
     model: "thinkingmachines/inkling",
   },
 ];
