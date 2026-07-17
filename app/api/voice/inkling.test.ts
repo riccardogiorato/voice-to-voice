@@ -173,5 +173,5 @@ test("runs one audio completion for both transcript and reply", async () => {
 });
 
 function mockFetch(payload: unknown) {
-  return (async () => Response.json(payload)) as typeof fetch;
+  return (async () => Response.json(payload)) as unknown as typeof fetch;
 }

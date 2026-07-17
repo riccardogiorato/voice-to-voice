@@ -10,6 +10,7 @@
     "bench:tts": "bun scripts/benchmark-together-tts.mts",
     "bench:repair": "bun scripts/benchmark-together-repair.mts",
     "bench:reply": "bun scripts/benchmark-together-reply.mts",
+    "bench:voice:languages": "bun scripts/benchmark-voice-pipelines-multilingual.mts",
     "probe:inkling": "bun scripts/probe-together-inkling.mts",
     "test": "bun test app/api/voice/*.test.ts app/_hooks/*.test.ts app/_components/voice/*.test.ts app/_components/voice/*.test.tsx",
     "test:voice": "bun scripts/e2e-voice-latency.mjs",

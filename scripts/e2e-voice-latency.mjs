@@ -38,7 +38,8 @@ import WebSocket from 'ws';
 
 // ---------- constants ----------
 
-const FIXTURE_PATH = path.join('test-fixtures', 'hello-16k.pcm');
+const DEFAULT_FIXTURE_PATH = path.join('test-fixtures', 'hello-16k.pcm');
+let fixturePath = DEFAULT_FIXTURE_PATH;
 const TTS_TEXT = 'Hello! How are you doing today?';
 const TTS_MODEL = 'hexgrad/Kokoro-82M';
 const TTS_VOICE = 'af_heart';
@@ -154,9 +155,12 @@ function normalizeTargetUrl(raw, pipeline) {
 // resample() in app/api/voice/route.ts) before saving — guaranteeing a true
 // 16 kHz fixture rather than 24 kHz content mislabeled as 16 kHz.
 async function ensureFixture(apiKey) {
-  if (fs.existsSync(FIXTURE_PATH)) return;
+  if (fs.existsSync(fixturePath)) return;
 
-  fs.mkdirSync(path.dirname(FIXTURE_PATH), { recursive: true });
+  if (fixturePath !== DEFAULT_FIXTURE_PATH) {
+    throw new Error(`Fixture not found: ${fixturePath}`);
+  }
+  fs.mkdirSync(path.dirname(fixturePath), { recursive: true });
 
   const res = await fetch(TTS_ENDPOINT, {
     method: 'POST',
@@ -211,16 +215,16 @@ async function ensureFixture(apiKey) {
     pcm16.writeInt16LE(value, i * 2);
   }
 
-  fs.writeFileSync(FIXTURE_PATH, pcm16);
+  fs.writeFileSync(fixturePath, pcm16);
   console.log(
-    `Synthesized fixture: ${FIXTURE_PATH} (${bytes.length} bytes -> resampled ${pcm16.length} bytes @ ${FIXTURE_SAMPLE_RATE} Hz)`,
+    `Synthesized fixture: ${fixturePath} (${bytes.length} bytes -> resampled ${pcm16.length} bytes @ ${FIXTURE_SAMPLE_RATE} Hz)`,
   );
 }
 
 // Read the fixture (signed 16-bit little-endian PCM) and split it into 80 ms
 // chunks of Float32 samples encoded as little-endian bytes + base64.
 function buildChunks() {
-  const pcm16 = fs.readFileSync(FIXTURE_PATH);
+  const pcm16 = fs.readFileSync(fixturePath);
   const sampleCount = Math.floor(pcm16.byteLength / 2); // 2 bytes per s16le sample
   const chunks = [];
   for (let off = 0; off < sampleCount; off += CHUNK_SAMPLES) {
@@ -278,14 +282,78 @@ function computeMetrics(m) {
   return { sttMs, ttftMs, firstAudioMs, totalMs, audioSeconds, audioRms };
 }
 
+function flagValue(name) {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return undefined;
+  const value = process.argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`Missing value for ${name}`);
+  }
+  return value;
+}
+
+function readFixtureMetadata(pcmPath) {
+  try {
+    return JSON.parse(fs.readFileSync(`${pcmPath}.json`, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function normalizedTokens(text, metric) {
+  const normalized = String(text ?? '')
+    .normalize('NFKD')
+    .replace(/\p{Mark}/gu, '')
+    .toLowerCase();
+  if (metric === 'cer') {
+    return Array.from(normalized.replace(/[^\p{Letter}\p{Number}]/gu, ''));
+  }
+  const words = normalized
+    .replace(/[^\p{Letter}\p{Number}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return words ? words.split(' ') : [];
+}
+
+function editDistance(reference, hypothesis) {
+  let previous = Array.from({ length: hypothesis.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= reference.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= hypothesis.length; j += 1) {
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + (reference[i - 1] === hypothesis[j - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[hypothesis.length];
+}
+
+function transcriptErrorRate(reference, hypothesis, metric) {
+  const referenceTokens = normalizedTokens(reference, metric);
+  const hypothesisTokens = normalizedTokens(hypothesis, metric);
+  if (referenceTokens.length === 0) return hypothesisTokens.length === 0 ? 0 : 1;
+  return editDistance(referenceTokens, hypothesisTokens) / referenceTokens.length;
+}
+
 // ---------- main ----------
 
 async function main() {
   const rawUrl = process.argv[2];
-  const pipelineFlag = process.argv.indexOf('--pipeline');
   const pipeline = String(
-    pipelineFlag >= 0 ? process.argv[pipelineFlag + 1] : process.env.VOICE_PIPELINE ?? 'classic',
+    flagValue('--pipeline') ?? process.env.VOICE_PIPELINE ?? 'classic',
   ).toLowerCase();
+  const language = String(flagValue('--language') ?? 'en').toLowerCase();
+  fixturePath = path.normalize(flagValue('--fixture') ?? DEFAULT_FIXTURE_PATH);
+  const fixtureMeta = readFixtureMetadata(fixturePath);
+  const expectedTranscript = flagValue('--expected') ?? fixtureMeta?.text ?? TTS_TEXT;
+  const transcriptMetric = ['ja', 'zh', 'ko'].includes(language) ? 'cer' : 'wer';
+  const maxTranscriptErrorRate = Number(
+    process.env.BUDGET_TRANSCRIPT_ERROR_RATE ?? 0.35,
+  );
+  const requestedOutput = flagValue('--output');
   if (!rawUrl) {
     console.error('Usage: bun scripts/e2e-voice-latency.mjs <url> [--pipeline classic|inkling]');
     console.error('  <url> is the deployed endpoint, e.g. https://your-app.vercel.app');
@@ -315,10 +383,10 @@ async function main() {
   }
   const apiKey = process.env.TOGETHER_API_KEY;
 
-  if (!fs.existsSync(FIXTURE_PATH)) {
+  if (!fs.existsSync(fixturePath)) {
     if (!apiKey) {
       console.error(
-        `Fixture ${FIXTURE_PATH} not found and TOGETHER_API_KEY is not set.\n` +
+        `Fixture ${fixturePath} not found and TOGETHER_API_KEY is not set.\n` +
           'Set TOGETHER_API_KEY (or put it in ./.env) to synthesize it on first run.',
       );
       process.exit(1);
@@ -342,7 +410,8 @@ async function main() {
   console.log(`Pipeline    : ${pipeline}`);
   console.log(`Protection  : ${protectionCookie ? 'bypass cookie' : 'none'}`);
   console.log(`Origin      : ${origin}`);
-  console.log(`Fixture     : ${FIXTURE_PATH} (${fs.statSync(FIXTURE_PATH).size} bytes)`);
+  console.log(`Language    : ${language}`);
+  console.log(`Fixture     : ${fixturePath} (${fs.statSync(fixturePath).size} bytes)`);
   console.log(`Chunks      : ${chunks.length} x ${CHUNK_SAMPLES} samples @ ${FIXTURE_SAMPLE_RATE} Hz (${CHUNK_INTERVAL_MS} ms each)`);
   console.log(`Timeout     : ${HARD_TIMEOUT_MS} ms`);
   console.log('─'.repeat(53));
@@ -367,7 +436,12 @@ async function main() {
   const budgetFirstAudio = Number(process.env.BUDGET_FIRST_AUDIO_MS ?? 7000);
   const budgetTotal = Number(process.env.BUDGET_TOTAL_MS ?? 20000);
 
-  const transcriptOk = /hello|how are you/i.test(m.finalTranscript);
+  const errorRate = transcriptErrorRate(
+    expectedTranscript,
+    m.finalTranscript,
+    transcriptMetric,
+  );
+  const transcriptOk = errorRate <= maxTranscriptErrorRate;
   const assistantOk = m.assistantText.trim().length > 0;
   const audioBytesOk = m.totalAudioBytes > 24000;
   const rmsOk = audioRms > 0.005;
@@ -377,7 +451,8 @@ async function main() {
 
   const pass = (ok) => (ok ? 'PASS' : 'FAIL');
   const tableRows = [
-    { label: 'transcript.final', value: trunc(m.finalTranscript || '(none)', 40), budget: '/hello|how are you/i', pass: pass(transcriptOk) },
+    { label: 'transcript.final', value: trunc(m.finalTranscript || '(none)', 40), budget: `${transcriptMetric.toUpperCase()} <= ${(maxTranscriptErrorRate * 100).toFixed(0)}%`, pass: pass(transcriptOk) },
+    { label: `transcript ${transcriptMetric.toUpperCase()}`, value: `${(errorRate * 100).toFixed(1)}%`, budget: `<= ${(maxTranscriptErrorRate * 100).toFixed(0)}%`, pass: pass(transcriptOk) },
     { label: 'assistant text', value: trunc(m.assistantText || '(none)', 40), budget: 'non-empty', pass: pass(assistantOk) },
     { label: 'audio bytes', value: `${fmtBytes(m.totalAudioBytes)} (${fmt2(audioSeconds)}s)`, budget: '> 24000', pass: pass(audioBytesOk) },
     { label: 'audio RMS', value: fmt2(audioRms), budget: '> 0.005', pass: pass(rmsOk) },
@@ -397,7 +472,9 @@ async function main() {
   // Write JSON results.
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const outDir = 'bench-results';
-  const file = path.join(outDir, `voice-e2e-${pipeline}-${stamp}.json`);
+  const file = requestedOutput
+    ? path.normalize(requestedOutput)
+    : path.join(outDir, `voice-e2e-${pipeline}-${stamp}.json`);
   const allPass =
     transcriptOk &&
     assistantOk &&
@@ -409,7 +486,7 @@ async function main() {
     !m.error &&
     !result.timedOut;
   try {
-    fs.mkdirSync(outDir, { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     const payload = {
       meta: {
         timestamp: new Date().toISOString(),
@@ -417,16 +494,32 @@ async function main() {
         durationMs: Date.now() - startedAt,
         endpoint: target.href,
         pipeline,
+        language,
         origin,
-        fixture: FIXTURE_PATH,
-        fixtureBytes: fs.statSync(FIXTURE_PATH).size,
+        fixture: fixturePath,
+        fixtureBytes: fs.statSync(fixturePath).size,
         chunkSamples: CHUNK_SAMPLES,
         chunkIntervalMs: CHUNK_INTERVAL_MS,
         fixtureSampleRate: FIXTURE_SAMPLE_RATE,
         hardTimeoutMs: HARD_TIMEOUT_MS,
-        budgets: { sttMs: budgetStt, firstAudioMs: budgetFirstAudio, totalMs: budgetTotal },
+        budgets: {
+          sttMs: budgetStt,
+          firstAudioMs: budgetFirstAudio,
+          totalMs: budgetTotal,
+          transcriptErrorRate: maxTranscriptErrorRate,
+        },
       },
-      metrics: { sttMs, ttftMs, firstAudioMs, totalMs, audioSeconds, audioRms },
+      metrics: {
+        sttMs,
+        ttftMs,
+        firstAudioMs,
+        totalMs,
+        audioSeconds,
+        audioRms,
+        transcriptErrorRate: errorRate,
+        transcriptMetric,
+      },
+      expectedTranscript,
       transcript: m.finalTranscript,
       assistantText: m.assistantText,
       totalAudioBytes: m.totalAudioBytes,
