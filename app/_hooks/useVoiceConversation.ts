@@ -15,6 +15,10 @@ import {
   rms,
   type ThinkingSoundHandle,
 } from "@/app/_lib/client-audio";
+import {
+  parseVoicePipeline,
+  type VoicePipeline,
+} from "@/app/_lib/voice-pipeline";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 
@@ -153,6 +157,7 @@ export function useVoiceConversation() {
   const [toolActivities, setToolActivities] = useState<ToolActivityItem[]>([]);
   const [debugCopied, setDebugCopied] = useState(false);
   const [debugVersion, setDebugVersion] = useState(0);
+  const [pipeline, setPipelineState] = useState<VoicePipeline>("classic");
 
   const socketRef = useRef<WebSocket | null>(null);
   const turnsRef = useRef<Turn[]>([]);
@@ -342,11 +347,12 @@ export function useVoiceConversation() {
       });
       mediaStreamRef.current = stream;
 
-      const socket = new WebSocket(getVoiceSocketUrl());
+      const socketUrl = getVoiceSocketUrl(pipeline);
+      const socket = new WebSocket(socketUrl);
       socketRef.current = socket;
 
       socket.onopen = async () => {
-        appendDebug("system", "socket.open", { url: getVoiceSocketUrl() });
+        appendDebug("system", "socket.open", { url: socketUrl, pipeline });
         sendClientEvent({ type: "conversation.start", history });
         try {
           await wireMicrophone(audioContext, stream, socket);
@@ -1338,6 +1344,17 @@ export function useVoiceConversation() {
     partialRef.current = partial;
   }, [partial]);
 
+  useEffect(() => {
+    const saved = window.localStorage.getItem("voice-pipeline");
+    if (saved) setPipelineState(parseVoicePipeline(saved));
+  }, []);
+
+  function setPipeline(next: VoicePipeline) {
+    if (phaseRef.current !== "idle") return;
+    setPipelineState(next);
+    window.localStorage.setItem("voice-pipeline", next);
+  }
+
   return {
     conversationItems,
     conversationScrollRef,
@@ -1347,10 +1364,12 @@ export function useVoiceConversation() {
     micActivity,
     micLevel,
     muted,
+    pipeline,
     phase,
     resetConversation,
     startConversation,
     startNewConversation,
+    setPipeline,
     stopConversation,
     toggleMute,
     toolActivities,

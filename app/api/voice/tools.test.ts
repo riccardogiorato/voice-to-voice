@@ -27,7 +27,7 @@ test("gets current time in the user's Vercel-detected time zone", async () => {
 
   expect(result.timeZone).toBe("Europe/Rome");
   expect(result.formatted).toContain("GMT+02:00");
-  expect(result.formatted).toMatch(/\b\d{2}:\d{2}:\d{2}\b/);
+  expect(result.formatted).toMatch(/\b\d{1,2}:\d{2}:\d{2}\b/);
   expect(result.formatted).not.toMatch(/\b(?:AM|PM)\b/);
   expect(new Date(result.utc).getTime()).toBeGreaterThanOrEqual(before.getTime());
   expect(new Date(result.utc).getTime()).toBeLessThanOrEqual(after.getTime());

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // scripts/e2e-voice-latency.mjs
 //
 // End-to-end, protocol-level latency test for the voice assistant exposed at
@@ -20,15 +20,16 @@
 //   * Exits 0 only if every assertion passes; 1 otherwise. A server {type:'error'}
 //     event or a 60 s hard timeout is a failure.
 //
-// Only external dependency is 'ws' (already installed). Requires Node 20+.
+// Only external dependency is 'ws' (already installed). Run with Bun.
 //
 // Usage:
-//   node scripts/e2e-voice-latency.mjs https://your-app.vercel.app
-//   node scripts/e2e-voice-latency.mjs wss://your-app.vercel.app/api/voice
+//   bun scripts/e2e-voice-latency.mjs https://your-app.vercel.app --pipeline classic
+//   bun scripts/e2e-voice-latency.mjs https://your-app.vercel.app --pipeline inkling
 //
 // If test-fixtures/hello-16k.pcm is missing it is synthesized once via Together
 // REST TTS (needs TOGETHER_API_KEY, auto-loaded from ./.env). Env overrides:
 //   BUDGET_STT_MS=4000  BUDGET_FIRST_AUDIO_MS=7000  BUDGET_TOTAL_MS=20000
+//   VERCEL_BYPASS_COOKIE_FILE=/tmp/vercel-cookies.txt (protected previews)
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -101,13 +102,27 @@ function printTable(rows) {
   for (const r of data) console.log(pad(r));
 }
 
+function readNetscapeCookieHeader(file) {
+  if (!file) return '';
+  const cookies = [];
+  for (let line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    if (line.startsWith('#HttpOnly_')) line = line.slice('#HttpOnly_'.length);
+    else if (!line || line.startsWith('#')) continue;
+    const fields = line.split('\t');
+    if (fields.length >= 7 && fields[5] && fields[6]) {
+      cookies.push(`${fields[5]}=${fields[6]}`);
+    }
+  }
+  return cookies.join('; ');
+}
+
 // ---------- url handling ----------
 
 // Normalize the target URL to a ws(s) URL pointing at /api/voice.
 //   https://host        -> wss://host/api/voice
 //   https://host/api/x  -> wss://host/api/x   (path kept)
 //   wss://host/api/voice-> wss://host/api/voice
-function normalizeTargetUrl(raw) {
+function normalizeTargetUrl(raw, pipeline) {
   let u;
   try {
     u = new URL(raw);
@@ -124,6 +139,7 @@ function normalizeTargetUrl(raw) {
   }
 
   if (u.pathname === '' || u.pathname === '/') u.pathname = '/api/voice';
+  u.searchParams.set('pipeline', pipeline);
   return u;
 }
 
@@ -266,16 +282,24 @@ function computeMetrics(m) {
 
 async function main() {
   const rawUrl = process.argv[2];
+  const pipelineFlag = process.argv.indexOf('--pipeline');
+  const pipeline = String(
+    pipelineFlag >= 0 ? process.argv[pipelineFlag + 1] : process.env.VOICE_PIPELINE ?? 'classic',
+  ).toLowerCase();
   if (!rawUrl) {
-    console.error('Usage: node scripts/e2e-voice-latency.mjs <url>');
+    console.error('Usage: bun scripts/e2e-voice-latency.mjs <url> [--pipeline classic|inkling]');
     console.error('  <url> is the deployed endpoint, e.g. https://your-app.vercel.app');
     console.error('  or a full wss URL: wss://your-app.vercel.app/api/voice');
+    process.exit(2);
+  }
+  if (pipeline !== 'classic' && pipeline !== 'inkling') {
+    console.error(`Invalid pipeline: ${pipeline}. Use classic or inkling.`);
     process.exit(2);
   }
 
   let target;
   try {
-    target = normalizeTargetUrl(rawUrl);
+    target = normalizeTargetUrl(rawUrl, pipeline);
   } catch (e) {
     console.error(e.message);
     process.exit(2);
@@ -308,10 +332,15 @@ async function main() {
   }
 
   const chunks = buildChunks();
+  const protectionCookie = readNetscapeCookieHeader(
+    process.env.VERCEL_BYPASS_COOKIE_FILE,
+  );
 
   console.log('End-to-end voice latency test');
   console.log('─'.repeat(53));
   console.log(`Endpoint    : ${target.href}`);
+  console.log(`Pipeline    : ${pipeline}`);
+  console.log(`Protection  : ${protectionCookie ? 'bypass cookie' : 'none'}`);
   console.log(`Origin      : ${origin}`);
   console.log(`Fixture     : ${FIXTURE_PATH} (${fs.statSync(FIXTURE_PATH).size} bytes)`);
   console.log(`Chunks      : ${chunks.length} x ${CHUNK_SAMPLES} samples @ ${FIXTURE_SAMPLE_RATE} Hz (${CHUNK_INTERVAL_MS} ms each)`);
@@ -321,7 +350,14 @@ async function main() {
   const m = newMetrics();
   const startedAt = Date.now();
 
-  const result = await runTurn(target.href, origin, chunks, m, startedAt);
+  const result = await runTurn(
+    target.href,
+    origin,
+    chunks,
+    m,
+    startedAt,
+    protectionCookie,
+  );
 
   // Build the assertion list.
   const { sttMs, ttftMs, firstAudioMs, totalMs, audioSeconds, audioRms } =
@@ -361,7 +397,7 @@ async function main() {
   // Write JSON results.
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const outDir = 'bench-results';
-  const file = path.join(outDir, `voice-e2e-${stamp}.json`);
+  const file = path.join(outDir, `voice-e2e-${pipeline}-${stamp}.json`);
   const allPass =
     transcriptOk &&
     assistantOk &&
@@ -380,6 +416,7 @@ async function main() {
         startedAt: new Date(startedAt).toISOString(),
         durationMs: Date.now() - startedAt,
         endpoint: target.href,
+        pipeline,
         origin,
         fixture: FIXTURE_PATH,
         fixtureBytes: fs.statSync(FIXTURE_PATH).size,
@@ -420,7 +457,7 @@ async function main() {
 
 // Drive a single voice turn over a fresh WebSocket. Resolves once audio.done is
 // received, the server errors, the socket closes, or the hard timeout elapses.
-function runTurn(url, origin, chunks, m, startedAt) {
+function runTurn(url, origin, chunks, m, startedAt, protectionCookie = '') {
   return new Promise((resolve) => {
     const state = { timedOut: false, finished: false };
     const finish = (timedOut = false) => {
@@ -440,7 +477,11 @@ function runTurn(url, origin, chunks, m, startedAt) {
 
     const timer = setTimeout(() => finish(true), HARD_TIMEOUT_MS);
 
-    const ws = new WebSocket(url, { headers: { Origin: origin } });
+    const headers = {
+      Origin: origin,
+      ...(protectionCookie ? { Cookie: protectionCookie } : {}),
+    };
+    const ws = new WebSocket(url, { headers });
 
     const send = (obj) => safeSend(ws, obj);
     let listening = false;

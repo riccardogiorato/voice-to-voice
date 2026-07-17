@@ -146,6 +146,36 @@ test("reports listening when user speech starts during a pending answer", () => 
   expect(client.sent).toContainEqual({ type: "state", state: "listening" });
 });
 
+test("buffers one browser VAD turn for the Inkling audio request", async () => {
+  process.env.TOGETHER_API_KEY = "test-key";
+  const client = new FakeClientSocket();
+  const session = new VoiceSession(client as any, {}, "inkling");
+  const captured: number[][] = [];
+
+  (session as any).runInklingTurn = () => {
+    captured.push(
+      (session as any).inklingPcmChunks.flatMap((chunk: Uint8Array) => [
+        ...chunk,
+      ]),
+    );
+  };
+
+  (session as any).handleClientMessage(rawMessage({ type: "speech.started" }));
+  (session as any).handleClientMessage(
+    rawMessage({
+      type: "audio.input",
+      audio: Buffer.from([1, 0, 2, 0]).toString("base64"),
+      sampleRate: 16_000,
+      format: "pcm_s16le",
+    }),
+  );
+  (session as any).handleClientMessage(rawMessage({ type: "audio.commit" }));
+
+  await delay(350);
+
+  expect(captured).toEqual([[1, 0, 2, 0]]);
+});
+
 test("recovers to listening when TTS never sends audio done", async () => {
   const client = new FakeClientSocket();
   const session = new VoiceSession(client as any);

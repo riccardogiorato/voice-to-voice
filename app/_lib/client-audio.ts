@@ -1,4 +1,5 @@
 import type { MutableRefObject } from "react";
+import type { VoicePipeline } from "./voice-pipeline";
 
 type VadDecision = {
   probability: number;
@@ -42,9 +43,11 @@ type WindowWithAudioContext = Window & {
   webkitAudioContext?: typeof AudioContext;
 };
 
-export function getVoiceSocketUrl() {
+export function getVoiceSocketUrl(pipeline: VoicePipeline = "classic") {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/api/voice`;
+  const url = new URL(`${protocol}//${window.location.host}/api/voice`);
+  url.searchParams.set("pipeline", pipeline);
+  return url.toString();
 }
 
 export async function loadBrowserTenVad() {
