@@ -2,30 +2,35 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { AudioLines, ChevronLeft, LoaderCircle, Mic, RotateCcw } from "lucide-react";
+import {
+  AudioLines,
+  ChevronLeft,
+  LoaderCircle,
+  Mic,
+  RotateCcw,
+  Volume2,
+} from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   concatFloat32,
   createInteractiveAudioContext,
   createMicWorkletUrl,
   pcm16Base64FromFloat32,
+  pcm16WavBlobFromBase64,
 } from "@/app/_lib/client-audio";
 import {
+  STT_PLAYGROUND_FALLBACK_MODELS,
   STT_PLAYGROUND_MAX_SECONDS,
-  STT_PLAYGROUND_MODELS,
   STT_PLAYGROUND_SAMPLE_RATE,
-  type SttPlaygroundModelId,
+  type SttComparisonModel,
+  type SttComparisonResult,
 } from "@/app/_lib/stt-playground";
 import { cx } from "./utils";
 
-type ComparisonResult = {
-  id: SttPlaygroundModelId;
-  label: string;
-  model: string;
-  transcript: string;
-  latencyMs: number;
-  error: string | null;
-};
+type ModelState =
+  | { status: "pending" }
+  | { status: "completed"; result: SttComparisonResult }
+  | { status: "failed"; error: string };
 
 type Recorder = {
   audioContext: AudioContext;
@@ -48,13 +53,19 @@ function formatLatency(latencyMs: number) {
 export function SttPlayground() {
   const [status, setStatus] = useState<Status>("idle");
   const [durationMs, setDurationMs] = useState(0);
-  const [results, setResults] = useState<ComparisonResult[] | null>(null);
+  const [models, setModels] = useState<SttComparisonModel[]>(
+    STT_PLAYGROUND_FALLBACK_MODELS,
+  );
+  const [activeModels, setActiveModels] = useState<SttComparisonModel[] | null>(null);
+  const [modelStates, setModelStates] = useState<Record<string, ModelState>>({});
+  const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const recorderRef = useRef<Recorder | null>(null);
   const holdRef = useRef(false);
   const startedAtRef = useRef(0);
   const animationFrameRef = useRef<number | null>(null);
   const maxDurationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playbackUrlRef = useRef<string | null>(null);
 
   const clearRecording = () => {
     if (animationFrameRef.current !== null) {
@@ -80,7 +91,22 @@ export function SttPlayground() {
   useEffect(() => {
     return () => {
       clearRecording();
+      if (playbackUrlRef.current) URL.revokeObjectURL(playbackUrlRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    void fetch("/api/stt-playground")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Could not load the Together STT catalog.");
+        return (await response.json()) as { models?: SttComparisonModel[] };
+      })
+      .then((body) => {
+        if (body.models?.length) setModels(body.models);
+      })
+      .catch(() => {
+        // The built-in catalog remains usable if a transient catalog request fails.
+      });
   }, []);
 
   const refreshDuration = () => {
@@ -99,7 +125,8 @@ export function SttPlayground() {
 
     holdRef.current = true;
     setError(null);
-    setResults(null);
+    setModelStates({});
+    setActiveModels(null);
     setDurationMs(0);
     setStatus("preparing");
 
@@ -194,31 +221,64 @@ export function SttPlayground() {
       recorder.audioContext.sampleRate,
       STT_PLAYGROUND_SAMPLE_RATE,
     );
+    if (playbackUrlRef.current) URL.revokeObjectURL(playbackUrlRef.current);
+    const nextPlaybackUrl = URL.createObjectURL(
+      pcm16WavBlobFromBase64(audio, STT_PLAYGROUND_SAMPLE_RATE),
+    );
+    playbackUrlRef.current = nextPlaybackUrl;
+    setPlaybackUrl(nextPlaybackUrl);
+
+    const requestedModels = [...models];
+    setActiveModels(requestedModels);
+    setModelStates(
+      Object.fromEntries(
+        requestedModels.map((model) => [model.id, { status: "pending" }]),
+      ),
+    );
     setStatus("analyzing");
 
-    try {
-      const response = await fetch("/api/stt-playground", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ audio, sampleRate: STT_PLAYGROUND_SAMPLE_RATE }),
-      });
-      const body = (await response.json()) as {
-        error?: string;
-        results?: ComparisonResult[];
-      };
-      if (!response.ok || !body.results) {
-        throw new Error(body.error ?? "Comparison failed.");
-      }
-      setResults(body.results);
-      setStatus("idle");
-    } catch (caught) {
-      setStatus("error");
-      setError(caught instanceof Error ? caught.message : "Comparison failed.");
-    }
+    await Promise.allSettled(
+      requestedModels.map(async (model) => {
+        try {
+          const response = await fetch("/api/stt-playground", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              audio,
+              model: model.id,
+              sampleRate: STT_PLAYGROUND_SAMPLE_RATE,
+            }),
+          });
+          const body = (await response.json()) as {
+            error?: string;
+            result?: SttComparisonResult;
+          };
+          const result = body.result;
+          if (!response.ok || !result) {
+            throw new Error(body.error ?? "Comparison failed.");
+          }
+          setModelStates((current) => ({
+            ...current,
+            [model.id]: { status: "completed", result },
+          }));
+        } catch (caught) {
+          setModelStates((current) => ({
+            ...current,
+            [model.id]: {
+              status: "failed",
+              error: caught instanceof Error ? caught.message : "Comparison failed.",
+            },
+          }));
+        }
+      }),
+    );
+    setStatus("idle");
   };
 
   const isRecording = status === "recording";
   const isBusy = status === "preparing" || status === "analyzing";
+  const hasModelStates = Object.keys(modelStates).length > 0;
+  const displayedModels = activeModels ?? models;
 
   return (
     <main className="min-h-screen bg-[#f8f7ff] px-5 py-6 text-[#151320] sm:px-8 sm:py-8">
@@ -235,15 +295,15 @@ export function SttPlayground() {
           <div>
             <div className="flex items-center gap-2 text-sm font-semibold text-[#8e35d5]">
               <AudioLines className="size-4" aria-hidden />
-              Same audio. Three transcribers.
+              Same audio. Every Together serverless STT model.
             </div>
             <h1 className="mt-4 max-w-xl text-4xl font-semibold tracking-[-0.045em] text-balance sm:text-5xl">
-              Does Inkling hear you as well as the dedicated STT models?
+              How does Inkling compare with every Together STT model?
             </h1>
             <p className="mt-4 max-w-xl text-base leading-7 text-[#151320]/62 text-pretty">
-              Hold to speak, then release. Your exact recording is sent to Parakeet,
-              Whisper Large v3, and Inkling side by side — no VAD, reply model, or TTS
-              involved.
+              Hold to speak, then release. The exact same recording is sent to every
+              Together serverless speech-to-text model and Inkling — no VAD, reply
+              model, or TTS involved.
             </p>
           </div>
 
@@ -334,6 +394,24 @@ export function SttPlayground() {
                 </button>
               </div>
             ) : null}
+            {playbackUrl ? (
+              <div className="mt-4 rounded-[18px] bg-[#f5f3fc] p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-[#151320]">
+                  <Volume2 className="size-4 text-[#8e35d5]" aria-hidden />
+                  Listen to the exact clip sent to the models
+                </div>
+                <p className="mt-1 text-xs leading-5 text-[#151320]/52">
+                  16 kHz mono PCM, wrapped as WAV only so your browser can play it.
+                </p>
+                <audio
+                  aria-label="Recorded audio sent to transcription models"
+                  className="mt-3 h-10 w-full"
+                  controls
+                  preload="metadata"
+                  src={playbackUrl}
+                />
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -342,19 +420,21 @@ export function SttPlayground() {
             <div>
               <p className="text-sm font-semibold text-[#151320]/52">Comparison</p>
               <h2 className="mt-1 text-2xl font-semibold tracking-[-0.035em]">
-                {results ? "Latest recording" : "Waiting for a recording"}
+                {hasModelStates ? "Latest recording" : "Waiting for a recording"}
               </h2>
             </div>
-            {results ? (
+            {hasModelStates ? (
               <span className="hidden text-sm text-[#151320]/48 sm:block">
-                Same 16 kHz PCM audio sent concurrently
+                Same 16 kHz PCM audio, one request per model
               </span>
             ) : null}
           </div>
 
-          <div className="mt-5 grid gap-4 md:grid-cols-3">
-            {STT_PLAYGROUND_MODELS.map((model, index) => {
-              const result = results?.find((item) => item.id === model.id);
+          <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {displayedModels.map((model, index) => {
+              const modelState = modelStates[model.id];
+              const result =
+                modelState?.status === "completed" ? modelState.result : undefined;
               return (
                 <motion.article
                   key={model.id}
@@ -364,7 +444,7 @@ export function SttPlayground() {
                   )}
                   initial={false}
                   animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                  transition={{ duration: 0.28, delay: results ? index * 0.08 : 0 }}
+                  transition={{ duration: 0.28, delay: hasModelStates ? index * 0.08 : 0 }}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -395,11 +475,18 @@ export function SttPlayground() {
                       model.id === "inkling" && "text-white/86",
                     )}
                   >
-                    {result?.error ? (
+                    {modelState?.status === "pending" ? (
+                      <span className="inline-flex items-center gap-2 text-[#151320]/48">
+                        <LoaderCircle className="size-4 animate-spin" aria-hidden />
+                        Comparing…
+                      </span>
+                    ) : modelState?.status === "failed" ? (
+                      <span className="text-[#bf285f]">{modelState.error}</span>
+                    ) : result?.error ? (
                       <span className="text-[#bf285f]">{result.error}</span>
                     ) : result?.transcript ? (
                       result.transcript
-                    ) : results ? (
+                    ) : hasModelStates ? (
                       "No transcript returned."
                     ) : (
                       <span className={model.id === "inkling" ? "text-white/44" : "text-[#151320]/36"}>

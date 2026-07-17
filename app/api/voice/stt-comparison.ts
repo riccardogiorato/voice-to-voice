@@ -4,77 +4,131 @@ import {
   createInklingAudioCompletion,
   pcm16ToWav,
   TOGETHER_INKLING_MODEL,
+  TOGETHER_MODELS_URL,
 } from "./inkling";
 import { cleanTranscript } from "./voice-utils";
 import {
+  STT_PLAYGROUND_FALLBACK_MODELS,
   STT_PLAYGROUND_MAX_SECONDS,
-  STT_PLAYGROUND_MODELS,
   STT_PLAYGROUND_SAMPLE_RATE,
-  type SttPlaygroundModelId,
+  type SttComparisonModel,
+  type SttComparisonResult,
 } from "@/app/_lib/stt-playground";
 
 export { STT_PLAYGROUND_MAX_SECONDS, STT_PLAYGROUND_SAMPLE_RATE };
+export type { SttComparisonModel, SttComparisonResult };
 
-export const STT_COMPARISON_MODELS = STT_PLAYGROUND_MODELS.map((entry) => ({
-  ...entry,
-  model: entry.id === "inkling" ? TOGETHER_INKLING_MODEL : entry.model,
-  kind: entry.id === "inkling" ? ("inkling" as const) : ("realtime" as const),
-}));
 const STT_TIMEOUT_MS = 25_000;
 const STT_CHUNK_BYTES = 32_000;
+const MODEL_CATALOG_CACHE_MS = 5 * 60_000;
+const DEDICATED_ONLY_STT_PREFIXES = ["deepgram/"];
 
-export type SttComparisonResult = {
-  id: SttPlaygroundModelId;
-  label: string;
-  model: string;
-  transcript: string;
-  latencyMs: number;
-  error: string | null;
+type TogetherCatalogModel = {
+  created?: unknown;
+  display_name?: unknown;
+  id?: unknown;
+  type?: unknown;
 };
 
-type ComparisonDependencies = {
-  transcribeRealtime?: typeof transcribeRealtimeModel;
-  transcribeInkling?: typeof transcribeInklingModel;
+let catalogCache:
+  | { expiresAt: number; models: SttComparisonModel[] }
+  | undefined;
+
+function toComparisonModel(model: TogetherCatalogModel): SttComparisonModel | null {
+  if (model.type !== "transcribe" || typeof model.id !== "string" || !model.id) {
+    return null;
+  }
+  const id = model.id;
+  if (typeof model.created === "number" && model.created !== 0) return null;
+  if (DEDICATED_ONLY_STT_PREFIXES.some((prefix) => id.startsWith(prefix))) {
+    return null;
+  }
+
+  return {
+    id,
+    kind: "realtime",
+    label:
+      typeof model.display_name === "string" && model.display_name
+        ? model.display_name
+        : id,
+    model: id,
+  };
+}
+
+export async function getSttComparisonModels({
+  apiKey,
+  fetchImpl = fetch,
+  now = Date.now,
+}: {
+  apiKey: string;
+  fetchImpl?: typeof fetch;
   now?: () => number;
-};
+}): Promise<SttComparisonModel[]> {
+  if (catalogCache && catalogCache.expiresAt > now()) return catalogCache.models;
 
-export async function compareSttModels(
+  try {
+    const response = await fetchImpl(TOGETHER_MODELS_URL, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) throw new Error(`Together model catalog failed (${response.status}).`);
+
+    const body = (await response.json()) as { data?: unknown } | unknown[];
+    const catalog = Array.isArray(body) ? body : Array.isArray(body.data) ? body.data : [];
+    const realtime = catalog
+      .map((entry) => toComparisonModel(entry as TogetherCatalogModel))
+      .filter((entry): entry is SttComparisonModel => entry !== null)
+      .sort((left, right) => left.label.localeCompare(right.label));
+    const inkling = STT_PLAYGROUND_FALLBACK_MODELS.find(
+      (entry) => entry.kind === "inkling",
+    );
+    const models = inkling ? [...realtime, inkling] : realtime;
+    if (!models.length) throw new Error("Together returned no serverless STT models.");
+
+    catalogCache = { expiresAt: now() + MODEL_CATALOG_CACHE_MS, models };
+    return models;
+  } catch {
+    return STT_PLAYGROUND_FALLBACK_MODELS;
+  }
+}
+
+export async function transcribeSttComparisonModel(
   pcm16: Uint8Array,
+  entry: SttComparisonModel,
   apiKey: string,
-  dependencies: ComparisonDependencies = {},
-): Promise<SttComparisonResult[]> {
+  dependencies: {
+    now?: () => number;
+    transcribeInkling?: typeof transcribeInklingModel;
+    transcribeRealtime?: typeof transcribeRealtimeModel;
+  } = {},
+): Promise<SttComparisonResult> {
+  const now = dependencies.now ?? performance.now.bind(performance);
+  const startedAt = now();
   const realtime = dependencies.transcribeRealtime ?? transcribeRealtimeModel;
   const inkling = dependencies.transcribeInkling ?? transcribeInklingModel;
-  const now = dependencies.now ?? performance.now.bind(performance);
 
-  return Promise.all(
-    STT_COMPARISON_MODELS.map(async (entry) => {
-      const startedAt = now();
-      try {
-        const transcript =
-          entry.kind === "inkling"
-            ? await inkling(pcm16, apiKey)
-            : await realtime(pcm16, entry.model, apiKey);
-        return {
-          id: entry.id,
-          label: entry.label,
-          model: entry.model,
-          transcript: cleanTranscript(transcript),
-          latencyMs: Math.max(0, Math.round(now() - startedAt)),
-          error: null,
-        };
-      } catch (error) {
-        return {
-          id: entry.id,
-          label: entry.label,
-          model: entry.model,
-          transcript: "",
-          latencyMs: Math.max(0, Math.round(now() - startedAt)),
-          error: error instanceof Error ? error.message : "Transcription failed.",
-        };
-      }
-    }),
-  );
+  try {
+    const transcript =
+      entry.kind === "inkling"
+        ? await inkling(pcm16, apiKey)
+        : await realtime(pcm16, entry.model, apiKey);
+    const cleanedTranscript = cleanTranscript(transcript);
+    if (!cleanedTranscript) {
+      throw new Error(`${entry.label} returned an empty transcript.`);
+    }
+    return {
+      ...entry,
+      transcript: cleanedTranscript,
+      latencyMs: Math.max(0, Math.round(now() - startedAt)),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      ...entry,
+      transcript: "",
+      latencyMs: Math.max(0, Math.round(now() - startedAt)),
+      error: error instanceof Error ? error.message : "Transcription failed.",
+    };
+  }
 }
 
 export function decodeSttPlaygroundAudio(value: unknown) {
@@ -147,9 +201,9 @@ export function transcribeRealtimeModel(
       socket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
     });
     socket.on("message", (data) => {
-      let event: Record<string, any>;
+      let event: Record<string, unknown>;
       try {
-        event = JSON.parse(data.toString());
+        event = JSON.parse(data.toString()) as Record<string, unknown>;
       } catch {
         return;
       }
@@ -159,11 +213,8 @@ export function transcribeRealtimeModel(
         event.type === "conversation.item.input_audio_transcription.failed" ||
         event.type === "error"
       ) {
-        finish(
-          new Error(
-            String(event.error?.message ?? event.message ?? `${model} failed.`),
-          ),
-        );
+        const detail = event.error as { message?: unknown } | undefined;
+        finish(new Error(String(detail?.message ?? event.message ?? `${model} failed.`)));
       }
     });
     socket.on("error", (error) => finish(error));
@@ -173,10 +224,7 @@ export function transcribeRealtimeModel(
   });
 }
 
-export async function transcribeInklingModel(
-  pcm16: Uint8Array,
-  apiKey: string,
-) {
+export async function transcribeInklingModel(pcm16: Uint8Array, apiKey: string) {
   const wav = pcm16ToWav(pcm16, STT_PLAYGROUND_SAMPLE_RATE);
   const request = buildInklingAudioRequest({
     audio: {
@@ -189,14 +237,13 @@ export async function transcribeInklingModel(
       "Transcribe the spoken audio exactly. Return only " +
       "<transcript>the exact spoken words</transcript> and no other text.",
     maxTokens: 300,
+    model: TOGETHER_INKLING_MODEL,
     system:
       "You are a multilingual speech transcription engine. Preserve the " +
       "speaker's language, names, wording, and hesitations. Never answer the speech.",
   });
   const completion = await createInklingAudioCompletion({ apiKey, request });
-  const match = completion.content.match(
-    /<transcript>\s*([\s\S]*?)\s*<\/transcript>/i,
-  );
+  const match = completion.content.match(/<transcript>\s*([\s\S]*?)\s*<\/transcript>/i);
   const transcript = cleanTranscript(match?.[1] ?? completion.content);
   if (!transcript) throw new Error("Inkling returned an empty transcript.");
   return transcript;

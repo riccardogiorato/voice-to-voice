@@ -1,52 +1,100 @@
 import { expect, test } from "bun:test";
 import {
-  compareSttModels,
   decodeSttPlaygroundAudio,
-  STT_COMPARISON_MODELS,
+  getSttComparisonModels,
+  transcribeSttComparisonModel,
 } from "./stt-comparison";
 
-test("sends the same audio to both realtime models and Inkling", async () => {
-  const audio = new Uint8Array([1, 0, 2, 0]);
-  const calls: Array<{ kind: string; audio: Uint8Array; model?: string }> = [];
-  let clock = 100;
-
-  const results = await compareSttModels(audio, "test-key", {
-    now: () => (clock += 25),
-    transcribeRealtime: async (received, model) => {
-      calls.push({ kind: "realtime", audio: received, model });
-      return `Transcript from ${model}`;
-    },
-    transcribeInkling: async (received) => {
-      calls.push({ kind: "inkling", audio: received });
-      return "Transcript from Inkling";
-    },
+test("lists every public serverless STT model and keeps Inkling visible", async () => {
+  const models = await getSttComparisonModels({
+    apiKey: "test-key",
+    now: () => 10_000,
+    fetchImpl: (async () =>
+      Response.json({
+        data: [
+          { id: "openai/whisper-large-v3", type: "transcribe", created: 0 },
+          { id: "nvidia/nemotron-3.5-asr-streaming-0.6b", type: "transcribe", created: 0 },
+          { id: "deepgram/nova-3-multi", type: "transcribe", created: 0 },
+          { id: "user/private-asr", type: "transcribe", created: 1 },
+          { id: "Qwen/Qwen3.5-9B", type: "chat", created: 0 },
+        ],
+      })) as typeof fetch,
   });
 
-  expect(calls).toHaveLength(3);
-  expect(calls.every((call) => call.audio === audio)).toBe(true);
-  expect(calls.filter((call) => call.kind === "realtime").map((call) => call.model)).toEqual(
-    STT_COMPARISON_MODELS.slice(0, 2).map((entry) => entry.model),
-  );
-  expect(results.map((result) => result.id)).toEqual([
-    "parakeet",
-    "whisper",
+  expect(models.map((model) => model.id)).toEqual([
+    "nvidia/nemotron-3.5-asr-streaming-0.6b",
+    "openai/whisper-large-v3",
     "inkling",
   ]);
-  expect(results.every((result) => result.error === null)).toBe(true);
+  expect(models.at(-1)).toMatchObject({
+    kind: "inkling",
+    model: "thinkingmachines/inkling",
+  });
 });
 
-test("keeps one model failure isolated from the other transcripts", async () => {
-  const results = await compareSttModels(new Uint8Array([1, 0]), "test-key", {
-    transcribeRealtime: async (_audio, model) => {
-      if (model.includes("whisper")) throw new Error("Whisper unavailable");
-      return "Parakeet transcript";
+test("transcribes one requested model without waiting for a slow sibling", async () => {
+  const audio = new Uint8Array([1, 0, 2, 0]);
+  const result = await transcribeSttComparisonModel(
+    audio,
+    {
+      id: "openai/whisper-large-v3",
+      kind: "realtime",
+      label: "Whisper Large v3",
+      model: "openai/whisper-large-v3",
     },
-    transcribeInkling: async () => "Inkling transcript",
-  });
+    "test-key",
+    {
+      now: () => 10,
+      transcribeRealtime: async (received, model) => {
+        expect(received).toBe(audio);
+        expect(model).toBe("openai/whisper-large-v3");
+        return "Hello from Whisper";
+      },
+      transcribeInkling: async () => {
+        throw new Error("Inkling must not be called for the Whisper request.");
+      },
+    },
+  );
 
-  expect(results[0].transcript).toBe("Parakeet transcript");
-  expect(results[1].error).toBe("Whisper unavailable");
-  expect(results[2].transcript).toBe("Inkling transcript");
+  expect(result).toMatchObject({
+    id: "openai/whisper-large-v3",
+    transcript: "Hello from Whisper",
+    error: null,
+  });
+});
+
+test("returns a card-local error instead of throwing", async () => {
+  const result = await transcribeSttComparisonModel(
+    new Uint8Array([1, 0]),
+    {
+      id: "inkling",
+      kind: "inkling",
+      label: "Inkling",
+      model: "thinkingmachines/inkling",
+    },
+    "test-key",
+    { transcribeInkling: async () => { throw new Error("Inkling unavailable"); } },
+  );
+
+  expect(result.error).toBe("Inkling unavailable");
+  expect(result.transcript).toBe("");
+});
+
+test("turns an empty provider completion into a visible card-local error", async () => {
+  const result = await transcribeSttComparisonModel(
+    new Uint8Array([1, 0]),
+    {
+      id: "nvidia/nemotron-3-asr-streaming-0.6b",
+      kind: "realtime",
+      label: "Nemotron 3 ASR Streaming 0.6B",
+      model: "nvidia/nemotron-3-asr-streaming-0.6b",
+    },
+    "test-key",
+    { transcribeRealtime: async () => "" },
+  );
+
+  expect(result.error).toBe("Nemotron 3 ASR Streaming 0.6B returned an empty transcript.");
+  expect(result.transcript).toBe("");
 });
 
 test("rejects missing, too-short, and oversized recordings", () => {

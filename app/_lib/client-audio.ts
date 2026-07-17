@@ -188,6 +188,34 @@ export function pcm16Base64FromFloat32(
   return bytesToBase64(bytes);
 }
 
+export function pcm16WavBlobFromBase64(base64: string, sampleRate = 16_000) {
+  const pcm16 = base64ToBytes(base64);
+  const wav = new Uint8Array(44 + pcm16.byteLength);
+  const view = new DataView(wav.buffer);
+  const writeText = (offset: number, value: string) => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  };
+
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + pcm16.byteLength, true);
+  writeText(8, "WAVE");
+  writeText(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, pcm16.byteLength, true);
+  wav.set(pcm16, 44);
+
+  return new Blob([wav], { type: "audio/wav" });
+}
+
 export function rms(input: Float32Array) {
   let sum = 0;
 
