@@ -171,9 +171,53 @@ test("buffers one browser VAD turn for the Inkling audio request", async () => {
   );
   (session as any).handleClientMessage(rawMessage({ type: "audio.commit" }));
 
-  await delay(350);
+  await delay(1_250);
 
   expect(captured).toEqual([[1, 0, 2, 0]]);
+});
+
+test("keeps Inkling audio in one turn when speech resumes after a short pause", async () => {
+  process.env.TOGETHER_API_KEY = "test-key";
+  const client = new FakeClientSocket();
+  const session = new VoiceSession(client as any, {}, "inkling");
+  const captured: number[][] = [];
+
+  (session as any).runInklingTurn = () => {
+    captured.push(
+      (session as any).inklingPcmChunks.flatMap((chunk: Uint8Array) => [
+        ...chunk,
+      ]),
+    );
+    (session as any).clearInklingAudio();
+  };
+
+  (session as any).handleClientMessage(rawMessage({ type: "speech.started" }));
+  (session as any).handleClientMessage(
+    rawMessage({
+      type: "audio.input",
+      audio: Buffer.from([1, 0, 2, 0]).toString("base64"),
+      sampleRate: 16_000,
+      format: "pcm_s16le",
+    }),
+  );
+  (session as any).handleClientMessage(rawMessage({ type: "audio.commit" }));
+
+  await delay(350);
+
+  (session as any).handleClientMessage(rawMessage({ type: "speech.started" }));
+  (session as any).handleClientMessage(
+    rawMessage({
+      type: "audio.input",
+      audio: Buffer.from([3, 0, 4, 0]).toString("base64"),
+      sampleRate: 16_000,
+      format: "pcm_s16le",
+    }),
+  );
+  (session as any).handleClientMessage(rawMessage({ type: "audio.commit" }));
+
+  await delay(1_250);
+
+  expect(captured).toEqual([[1, 0, 2, 0, 3, 0, 4, 0]]);
 });
 
 test("recovers to listening when TTS never sends audio done", async () => {

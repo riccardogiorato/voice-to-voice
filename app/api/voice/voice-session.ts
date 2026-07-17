@@ -31,7 +31,7 @@ import type { ChatMessage, ClientEvent } from "./voice-utils";
 const TTS_DONE_AFTER_COMMIT_MS = 8_000;
 const TTS_DONE_AFTER_AUDIO_IDLE_MS = 4_000;
 const STT_COMMIT_AWAIT_TIMEOUT_MS = 2_000;
-const INKLING_COMMIT_GRACE_MS = 300;
+const INKLING_COMMIT_GRACE_MS = 1_200;
 const INKLING_MAX_PCM_BYTES = 400_000;
 const MAX_CLOSE_REASON_LENGTH = 120;
 let nextSessionId = 1;
