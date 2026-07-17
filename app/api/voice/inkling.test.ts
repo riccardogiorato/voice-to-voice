@@ -77,16 +77,12 @@ test("rejects a response that does not include the spoken transcript", () => {
 });
 
 test("describes Inkling as audio understanding while keeping TTS separate", () => {
-  const prompt = buildInklingSystemPrompt(new Date("2026-07-17T00:00:00Z"), {
-    timeZone: "Europe/Rome",
-  });
+  const prompt = buildInklingSystemPrompt();
 
   expect(prompt).toContain("understand the user's latest speech directly");
   expect(prompt).toContain("separate text-to-speech model");
-  expect(prompt).toContain("Europe/Rome");
-  expect(prompt).toContain("call get_current_time");
-  expect(prompt).toContain("Web search rules:\n-");
-  expect(prompt).toContain("include 2026 in the query");
+  expect(prompt).toContain("Do not call or propose tools");
+  expect(prompt).toContain("app routes any required live lookup");
 });
 
 test("wraps browser PCM16 in a WAV container with correct metadata", () => {
@@ -195,19 +191,9 @@ test("runs Inkling tools and returns the final transcript and reply", async () =
       choices: [
         {
           message: {
-            content: "",
-            tool_calls: [
-              {
-                id: "search-latest-models",
-                type: "function",
-                function: {
-                  name: "web_search",
-                  arguments: JSON.stringify({
-                    query: "Together AI latest model releases 2026",
-                  }),
-                },
-              },
-            ],
+            content:
+              "<transcript>What are the latest Together AI models?</transcript>\n" +
+              "<lang:en>I don't have the latest model list.",
           },
         },
       ],
@@ -241,29 +227,26 @@ test("runs Inkling tools and returns the final transcript and reply", async () =
   });
 
   expect(requests).toHaveLength(2);
-  expect(requests[0].tool_choice).toBe("auto");
-  expect(requests[0].tools.map((tool: any) => tool.function.name)).toEqual([
-    "get_current_time",
-    "get_user_location",
-    "web_search",
-  ]);
+  expect(requests[0].tool_choice).toBeUndefined();
+  expect(requests[0].tools).toBeUndefined();
   expect(requests[1].tools).toBeUndefined();
+  expect(requests[1].tool_choice).toBe("none");
   expect(requests[1].messages.at(-2)).toEqual({
     role: "tool",
-    tool_call_id: "search-latest-models",
+    tool_call_id: expect.stringContaining("web-search-"),
     content: JSON.stringify({ results: [{ title: "Inkling is live" }] }),
   });
   expect(activities).toEqual([
     {
-      id: "search-latest-models",
+      id: expect.stringContaining("web-search-"),
       name: "web_search",
-      input: "Together AI latest model releases 2026",
+      input: "What are the latest Together AI models 2026",
       status: "running",
     },
     {
-      id: "search-latest-models",
+      id: expect.stringContaining("web-search-"),
       name: "web_search",
-      input: "Together AI latest model releases 2026",
+      input: "What are the latest Together AI models 2026",
       status: "completed",
       summary: "1 result: Inkling is live",
     },
@@ -273,6 +256,96 @@ test("runs Inkling tools and returns the final transcript and reply", async () =
     language: "en",
     reply: "Inkling is now available on Together AI Serverless.",
   });
+});
+
+test("routes a latest sports request to web search instead of current time", async () => {
+  process.env.EXA_API_KEY = "test-exa-key";
+  const requests: any[] = [];
+  const activities: any[] = [];
+  const responses = [
+    {
+      choices: [
+        {
+          message: {
+            content:
+              "<transcript>Can you tell me the latest matches from the World Cup?</transcript>\n" +
+              "<lang:en>The World Cup is not being held right now.",
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          message: {
+            content:
+              "<transcript>Can you tell me the latest matches from the World Cup?</transcript>\n" +
+              "<lang:en>Portugal beat Uzbekistan 3–0 in their latest group match.",
+          },
+        },
+      ],
+    },
+  ];
+  setToolCallRunnerForTest(() =>
+    JSON.stringify({
+      results: [{ title: "Portugal 3–0 Uzbekistan", text: "World Cup result" }],
+    }),
+  );
+
+  const result = await generateInklingVoiceTurn({
+    apiKey: "test-key",
+    history: [],
+    pcm16: new Uint8Array([0, 0, 1, 0]),
+    signal: new AbortController().signal,
+    userContext: { timeZone: "Europe/Rome" },
+    onToolActivity: (activity) => activities.push(activity),
+    fetchImpl: (async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return Response.json(responses[requests.length - 1]);
+    }) as typeof fetch,
+  });
+
+  expect(requests).toHaveLength(2);
+  expect(requests[0].tools).toBeUndefined();
+  expect(requests[1].messages.at(-2).tool_call_id).toStartWith("web-search-");
+  expect(activities.map((activity) => activity.name)).toEqual([
+    "web_search",
+    "web_search",
+  ]);
+  expect(result.reply).toContain("Portugal");
+});
+
+test("does not run a tool for an identity question", async () => {
+  process.env.EXA_API_KEY = "test-exa-key";
+  const requests: any[] = [];
+  const activities: any[] = [];
+
+  const result = await generateInklingVoiceTurn({
+    apiKey: "test-key",
+    history: [],
+    pcm16: new Uint8Array([0, 0, 1, 0]),
+    signal: new AbortController().signal,
+    onToolActivity: (activity) => activities.push(activity),
+    fetchImpl: (async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content:
+                "<transcript>What's your name?</transcript>\n" +
+                "<lang:en>I'm Inkling, your voice assistant.",
+            },
+          },
+        ],
+      });
+    }) as typeof fetch,
+  });
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0].tools).toBeUndefined();
+  expect(activities).toEqual([]);
+  expect(result.reply).toBe("I'm Inkling, your voice assistant.");
 });
 
 function mockFetch(payload: unknown) {

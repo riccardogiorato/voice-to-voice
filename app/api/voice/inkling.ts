@@ -3,12 +3,9 @@ import {
   stripAssistantMarkdown,
   stripReplyLanguageControlTags,
 } from "./reply";
-import { buildVoiceToolPolicyPrompt } from "./tool-policy";
-import {
-  AVAILABLE_TOOLS,
-  LOCAL_CONTEXT_TOOLS,
-  runToolCallWithActivity,
-} from "./tools";
+import { planVoiceToolForTranscript } from "./tool-policy";
+import { runToolCallWithActivity } from "./tools";
+import { AVAILABLE_TOOLS } from "./tools";
 import type { TogetherToolCall, ToolActivity } from "./tools";
 import type { UserContext } from "./user-context";
 import type { ChatMessage } from "./voice-utils";
@@ -17,11 +14,11 @@ export const TOGETHER_INKLING_MODEL = "thinkingmachines/inkling";
 export const TOGETHER_MODELS_URL = "https://api.together.ai/v1/models";
 export const TOGETHER_CHAT_COMPLETIONS_URL =
   "https://api.together.ai/v1/chat/completions";
-const INKLING_MAX_TOOL_ROUNDS = 1;
 const INKLING_FINAL_ANSWER_REMINDER =
   "The next response is the final spoken answer. Output exactly " +
   "<transcript>the exact spoken words</transcript>, then a newline, then " +
-  "<lang:xx> followed by the direct answer. Do not call another tool.";
+  "<lang:xx> followed by the direct answer. Use the tool result as the source " +
+  "of truth when it conflicts with the draft answer. Do not call another tool.";
 
 export type InklingAudioFormat = "flac" | "wav";
 
@@ -203,55 +200,54 @@ export async function generateInklingVoiceTurn({
       "<lang:xx> followed by your direct answer in that language. Do not output " +
       "reasoning, markdown, a closing language tag, or any other text.",
     maxTokens: 600,
-    system: buildInklingSystemPrompt(new Date(), userContext),
+    system: buildInklingSystemPrompt(),
   });
   const messages = [...baseRequest.messages];
-
-  for (let round = 0; round <= INKLING_MAX_TOOL_ROUNDS; round += 1) {
-    const allowTools = round < INKLING_MAX_TOOL_ROUNDS;
-    const availableTools = process.env.EXA_API_KEY
-      ? AVAILABLE_TOOLS
-      : LOCAL_CONTEXT_TOOLS;
-    const request: InklingChatRequest = {
-      ...baseRequest,
-      messages: [...messages],
-      ...(allowTools
-        ? { tools: availableTools, tool_choice: "auto" as const }
-        : {}),
-    };
-    const completion = await createInklingAudioCompletion({
-      apiKey,
-      fetchImpl,
-      request,
-      signal,
-    });
-
-    if (completion.toolCalls.length === 0) {
-      return parseInklingVoiceResponse(completion.content);
-    }
-
-    messages.push({
-      role: "assistant",
-      content: completion.content,
-      tool_calls: completion.toolCalls,
-    });
-    for (const toolCall of completion.toolCalls.slice(0, 2)) {
-      const toolResult = await runToolCallWithActivity(
-        toolCall,
-        signal,
-        onToolActivity,
-        userContext,
-      );
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: toolResult,
-      });
-    }
-    messages.push({ role: "system", content: INKLING_FINAL_ANSWER_REMINDER });
+  const initialCompletion = await createInklingAudioCompletion({
+    apiKey,
+    fetchImpl,
+    request: baseRequest,
+    signal,
+  });
+  const initialTurn = parseInklingVoiceResponse(initialCompletion.content);
+  const toolPlan = planVoiceToolForTranscript(initialTurn.transcript);
+  if (!toolPlan || (toolPlan.name === "web_search" && !process.env.EXA_API_KEY)) {
+    return initialTurn;
   }
 
-  throw new Error("Together Inkling did not produce a final answer after tool use.");
+  const toolCall: TogetherToolCall = {
+    id: `${toolPlan.name.replaceAll("_", "-")}-${crypto.randomUUID()}`,
+    type: "function",
+    function: {
+      name: toolPlan.name,
+      arguments: JSON.stringify(toolPlan.arguments),
+    },
+  };
+  messages.push({
+    role: "assistant",
+    content: initialCompletion.content,
+    tool_calls: [toolCall],
+  });
+  const toolResult = await runToolCallWithActivity(
+    toolCall,
+    signal,
+    onToolActivity,
+    userContext,
+  );
+  messages.push({
+    role: "tool",
+    tool_call_id: toolCall.id,
+    content: toolResult,
+  });
+  messages.push({ role: "system", content: INKLING_FINAL_ANSWER_REMINDER });
+
+  const finalCompletion = await createInklingAudioCompletion({
+    apiKey,
+    fetchImpl,
+    request: { ...baseRequest, messages, tool_choice: "none" },
+    signal,
+  });
+  return parseInklingVoiceResponse(finalCompletion.content);
 }
 
 export function parseInklingVoiceResponse(content: string): InklingVoiceTurn {
@@ -280,18 +276,16 @@ export function parseInklingVoiceResponse(content: string): InklingVoiceTurn {
   return { language: parsed.language, reply, transcript };
 }
 
-export function buildInklingSystemPrompt(
-  now = new Date(),
-  userContext: UserContext = {},
-) {
+export function buildInklingSystemPrompt() {
   return (
     "You are Together Voice, a warm, concise voice assistant demo built by " +
     "Together AI. You understand the user's latest speech directly with the " +
     "Thinking Machines Inkling model, and the app sends your text reply to a " +
     "separate text-to-speech model. Reply naturally in one or two short spoken " +
     "sentences in the same language as the latest speech. Use plain spoken text " +
-    "without markdown or formatting symbols.\n" +
-    buildVoiceToolPolicyPrompt(now, userContext)
+    "without markdown or formatting symbols. Do not call or propose tools and " +
+    "never output tool-call markup or special tool tokens. The app routes any " +
+    "required live lookup after you return the transcript."
   );
 }
 
