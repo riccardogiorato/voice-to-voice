@@ -56,10 +56,10 @@ test("accepts a reused TTS item id when a new assistant response starts", () => 
   expect(shouldIgnoreTtsItem(ignored, "tts_1")).toBe(false);
 });
 
-test("includes websocket close details in the reconnect message", () => {
+test("keeps websocket protocol details out of reconnect messages", () => {
   expect(
     buildSocketCloseMessage({ code: 1006, reason: "", wasClean: false }),
-  ).toBe("Session ended (1006: abnormal close). Tap the mic to reconnect.");
+  ).toBe("Connection lost. Tap the mic to reconnect.");
 
   expect(
     buildSocketCloseMessage({
@@ -67,9 +67,24 @@ test("includes websocket close details in the reconnect message", () => {
       reason: "client message handler failed",
       wasClean: false,
     }),
-  ).toBe(
-    "Session ended (1011: client message handler failed). Tap the mic to reconnect.",
-  );
+  ).toBe("Connection lost. Tap the mic to reconnect.");
+});
+
+test("recognizes an abnormal close at the known call time limit", () => {
+  expect(
+    buildSocketCloseMessage(
+      { code: 1006, reason: "", wasClean: false },
+      600_000,
+    ),
+  ).toBe("Call time limit reached. Start a new call when you're ready.");
+
+  expect(
+    buildSocketCloseMessage({
+      code: 1000,
+      reason: "call time limit reached",
+      wasClean: true,
+    }),
+  ).toBe("Call time limit reached. Start a new call when you're ready.");
 });
 
 test("updates tool activity rows by id", () => {

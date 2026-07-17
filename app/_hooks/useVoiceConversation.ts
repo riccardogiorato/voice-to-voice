@@ -142,6 +142,8 @@ const TRANSCRIPT_SETTLE_MS = 1000;
 const MAX_COMMITTED_TURNS = 24;
 const MAX_VISIBLE_TRANSCRIPT_ITEMS = 8;
 const MAX_VISIBLE_CONVERSATION_ITEMS = 10;
+const CALL_TIME_LIMIT_MS = 600_000;
+const CALL_TIME_LIMIT_CLOSE_GRACE_MS = 15_000;
 
 export function useVoiceConversation() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -160,6 +162,7 @@ export function useVoiceConversation() {
   const [pipeline, setPipelineState] = useState<VoicePipeline>("classic");
 
   const socketRef = useRef<WebSocket | null>(null);
+  const sessionStartedAtRef = useRef<number | null>(null);
   const turnsRef = useRef<Turn[]>([]);
   const partialRef = useRef<PartialTranscript | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -352,6 +355,7 @@ export function useVoiceConversation() {
       socketRef.current = socket;
 
       socket.onopen = async () => {
+        sessionStartedAtRef.current = Date.now();
         appendDebug("system", "socket.open", { url: socketUrl, pipeline });
         sendClientEvent({ type: "conversation.start", history });
         try {
@@ -380,9 +384,15 @@ export function useVoiceConversation() {
         const closeDetails = describeSocketClose(event);
         appendDebug("system", "socket.close", closeDetails);
         const wasActive = phaseRef.current !== "idle";
+        const sessionStartedAt = sessionStartedAtRef.current;
+        const activeDurationMs =
+          sessionStartedAt === null ? 0 : Date.now() - sessionStartedAt;
+        sessionStartedAtRef.current = null;
         tearDownAudio();
         updatePhase("idle");
-        if (wasActive) setError(buildSocketCloseMessage(closeDetails));
+        if (wasActive) {
+          setError(buildSocketCloseMessage(closeDetails, activeDurationMs));
+        }
       };
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not start the microphone.");
@@ -542,6 +552,7 @@ export function useVoiceConversation() {
     sendClientEvent({ type: "conversation.stop" });
     socketRef.current?.close();
     socketRef.current = null;
+    sessionStartedAtRef.current = null;
     tearDownAudio();
     updatePhase("idle");
     updatePartial(null);
@@ -1833,15 +1844,24 @@ type SocketCloseDetails = {
   wasClean: boolean;
 };
 
-export function buildSocketCloseMessage(details: SocketCloseDetails) {
-  const suffix =
-    details.reason.length > 0
-      ? ` (${details.code}: ${details.reason})`
-      : details.code === 1006
-        ? " (1006: abnormal close)"
-        : ` (${details.code})`;
+export function buildSocketCloseMessage(
+  details: SocketCloseDetails,
+  activeDurationMs = 0,
+) {
+  const reachedCallLimit =
+    details.reason.toLowerCase().includes("call time limit") ||
+    (details.code === 1006 &&
+      activeDurationMs >= CALL_TIME_LIMIT_MS - CALL_TIME_LIMIT_CLOSE_GRACE_MS);
 
-  return `Session ended${suffix}. Tap the mic to reconnect.`;
+  if (reachedCallLimit) {
+    return "Call time limit reached. Start a new call when you're ready.";
+  }
+
+  if (details.code === 1000 && details.wasClean) {
+    return "Session ended. Tap the mic to reconnect.";
+  }
+
+  return "Connection lost. Tap the mic to reconnect.";
 }
 
 function describeSocketClose(event: CloseEvent): SocketCloseDetails {

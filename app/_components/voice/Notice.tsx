@@ -2,9 +2,15 @@ import { Clock3, TriangleAlert } from "lucide-react";
 import { cx } from "./utils";
 
 export function VoiceNotice({ message }: { message: string }) {
-  const isLimitNotice = message.toLowerCase().includes("time limit");
+  const normalizedMessage = message.toLowerCase();
+  const isLimitNotice = normalizedMessage.includes("time limit");
+  const isDisconnectNotice = normalizedMessage.includes("connection lost");
   const Icon = isLimitNotice ? Clock3 : TriangleAlert;
-  const title = isLimitNotice ? "Call time reached" : "Something went wrong";
+  const title = isLimitNotice
+    ? "Call time reached"
+    : isDisconnectNotice
+      ? "Call disconnected"
+      : "Something went wrong";
   const detail = isLimitNotice ? "Start a new call when you're ready." : message;
 
   return (
