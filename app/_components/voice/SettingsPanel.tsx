@@ -1,25 +1,20 @@
 "use client";
 
-import { Clipboard, Cpu } from "lucide-react";
-import type { VoicePipeline } from "@/app/_lib/voice-pipeline";
+import { useState } from "react";
+import { ChevronDown, Clipboard, Cpu } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import { cx } from "./utils";
 
 export function VoiceSettingsPanel({
   debugCopied = false,
   onCopyDebugLog,
-  onPipelineChange,
   overlay = false,
-  pipeline = "classic",
-  pipelineDisabled = false,
 }: {
   debugCopied?: boolean;
   onCopyDebugLog?: () => void;
-  onPipelineChange?: (pipeline: VoicePipeline) => void;
   overlay?: boolean;
-  pipeline?: VoicePipeline;
-  pipelineDisabled?: boolean;
 }) {
-  const inkling = pipeline === "inkling";
+  const [debugOpen, setDebugOpen] = useState(false);
 
   return (
     <div
@@ -32,89 +27,63 @@ export function VoiceSettingsPanel({
         <Cpu className="size-4 text-[#ef2cc1]" aria-hidden />
         Model stack
       </div>
-      <div
-        className="mt-4 grid grid-cols-2 rounded-full bg-[#050505]/6 p-1"
-        aria-label="Voice pipeline"
-      >
-        <PipelineButton
-          active={!inkling}
-          disabled={pipelineDisabled}
-          label="Classic"
-          onClick={() => onPipelineChange?.("classic")}
-        />
-        <PipelineButton
-          active={inkling}
-          disabled={pipelineDisabled}
-          label="Inkling"
-          onClick={() => onPipelineChange?.("inkling")}
-        />
-      </div>
       <p className="mt-2 text-xs leading-5 text-[#050505]/52">
-        {inkling
-          ? "One model listens and writes the reply."
-          : "Separate speech recognition and reply models."}
-        {pipelineDisabled ? " End the call to change it." : ""}
+        One model listens and writes the reply.
       </p>
       <dl className="mt-4 space-y-3 text-sm">
         <div className="flex items-center justify-between gap-4">
-          <dt className="text-[#050505]/52">
-            {inkling ? "Listen + reply" : "Speech to text"}
-          </dt>
-          <dd className="text-right font-medium text-[#050505]">
-            {inkling ? "Inkling" : "Parakeet / Whisper"}
-          </dd>
+          <dt className="text-[#050505]/52">Listen + reply</dt>
+          <dd className="text-right font-medium text-[#050505]">Inkling</dd>
         </div>
-        {!inkling ? (
-          <div className="flex items-center justify-between gap-4">
-            <dt className="text-[#050505]/52">Response</dt>
-            <dd className="text-right font-medium text-[#050505]">
-              Nemotron Ultra / MiniMax M2.7
-            </dd>
-          </div>
-        ) : null}
         <div className="flex items-center justify-between gap-4">
           <dt className="text-[#050505]/52">Voice</dt>
           <dd className="font-medium text-[#050505]">Sonic 3 / Kokoro</dd>
         </div>
       </dl>
-      <button
-        className="mt-4 flex w-full items-center justify-center gap-2 rounded-full bg-[#050505] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(5,5,5,0.16)] transition-[scale,background-color] duration-150 active:scale-[0.98]"
-        type="button"
-        onClick={onCopyDebugLog}
-      >
-        <Clipboard className="size-4" aria-hidden />
-        {debugCopied ? "Copied session" : "Copy session log"}
-      </button>
+      <div className="mt-4">
+        <button
+          aria-controls="voice-debug-actions"
+          aria-expanded={debugOpen}
+          className="flex min-h-10 w-full items-center justify-between rounded-[14px] px-2 text-sm font-semibold text-[#050505]/70 transition-[background-color,color] duration-150 hover:bg-[#050505]/5 hover:text-[#050505]"
+          onClick={() => setDebugOpen((open) => !open)}
+          type="button"
+        >
+          Debug
+          <ChevronDown
+            className={cx(
+              "size-4 transition-transform duration-200 ease-out",
+              debugOpen && "rotate-180",
+            )}
+            aria-hidden
+          />
+        </button>
+        <AnimatePresence initial={false}>
+          {debugOpen ? (
+            <motion.div
+              id="voice-debug-actions"
+              className="overflow-hidden"
+              initial={{ height: 0, opacity: 0, y: -4 }}
+              animate={{ height: "auto", opacity: 1, y: 0 }}
+              exit={{
+                height: 0,
+                opacity: 0,
+                y: -4,
+                transition: { duration: 0.15, ease: "easeIn" },
+              }}
+              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <button
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-full bg-[#050505] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(5,5,5,0.16)] transition-[scale,background-color] duration-150 active:scale-[0.96]"
+                type="button"
+                onClick={onCopyDebugLog}
+              >
+                <Clipboard className="size-4" aria-hidden />
+                {debugCopied ? "Copied session" : "Copy session log"}
+              </button>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+      </div>
     </div>
-  );
-}
-
-function PipelineButton({
-  active,
-  disabled,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  disabled: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      aria-pressed={active}
-      className={cx(
-        "rounded-full px-3 py-2 text-sm font-semibold transition-[color,background-color,box-shadow] duration-150",
-        active
-          ? "bg-white text-[#050505] shadow-[0_1px_5px_rgba(5,5,5,0.12)]"
-          : "text-[#050505]/52",
-        disabled && "cursor-not-allowed opacity-55",
-      )}
-      disabled={disabled}
-      onClick={onClick}
-      type="button"
-    >
-      {label}
-    </button>
   );
 }

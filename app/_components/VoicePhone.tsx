@@ -59,13 +59,11 @@ export function VoicePhone({ voice }: { voice: VoiceConversation }) {
           error={voice.error}
           hasTurns={voice.turns.length > 0}
           debugCopied={voice.debugCopied}
-          pipeline={voice.pipeline}
           onStart={voice.startConversation}
           onStartNew={voice.startNewConversation}
           onToggleMute={voice.toggleMute}
           onStop={voice.stopConversation}
           onCopyDebugLog={voice.copyDebugLog}
-          onPipelineChange={voice.setPipeline}
         />
       </div>
     </main>

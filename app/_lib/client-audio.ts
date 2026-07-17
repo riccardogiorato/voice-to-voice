@@ -43,7 +43,7 @@ type WindowWithAudioContext = Window & {
   webkitAudioContext?: typeof AudioContext;
 };
 
-export function getVoiceSocketUrl(pipeline: VoicePipeline = "classic") {
+export function getVoiceSocketUrl(pipeline: VoicePipeline = "inkling") {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const url = new URL(`${protocol}//${window.location.host}/api/voice`);
   url.searchParams.set("pipeline", pipeline);

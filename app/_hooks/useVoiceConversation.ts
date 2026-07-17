@@ -15,10 +15,7 @@ import {
   rms,
   type ThinkingSoundHandle,
 } from "@/app/_lib/client-audio";
-import {
-  parseVoicePipeline,
-  type VoicePipeline,
-} from "@/app/_lib/voice-pipeline";
+import type { VoicePipeline } from "@/app/_lib/voice-pipeline";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 
@@ -159,7 +156,7 @@ export function useVoiceConversation() {
   const [toolActivities, setToolActivities] = useState<ToolActivityItem[]>([]);
   const [debugCopied, setDebugCopied] = useState(false);
   const [debugVersion, setDebugVersion] = useState(0);
-  const [pipeline, setPipelineState] = useState<VoicePipeline>("classic");
+  const pipeline: VoicePipeline = "inkling";
 
   const socketRef = useRef<WebSocket | null>(null);
   const sessionStartedAtRef = useRef<number | null>(null);
@@ -1355,17 +1352,6 @@ export function useVoiceConversation() {
     partialRef.current = partial;
   }, [partial]);
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem("voice-pipeline");
-    if (saved) setPipelineState(parseVoicePipeline(saved));
-  }, []);
-
-  function setPipeline(next: VoicePipeline) {
-    if (phaseRef.current !== "idle") return;
-    setPipelineState(next);
-    window.localStorage.setItem("voice-pipeline", next);
-  }
-
   return {
     conversationItems,
     conversationScrollRef,
@@ -1380,7 +1366,6 @@ export function useVoiceConversation() {
     resetConversation,
     startConversation,
     startNewConversation,
-    setPipeline,
     stopConversation,
     toggleMute,
     toolActivities,

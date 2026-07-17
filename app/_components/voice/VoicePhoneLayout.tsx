@@ -3,7 +3,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useState, type MouseEvent, type Ref } from "react";
 import type { ConversationTimelineItem } from "@/app/_hooks/useVoiceConversation";
-import type { VoicePipeline } from "@/app/_lib/voice-pipeline";
 import { VoiceActiveControls, VoiceEndedControls } from "./Controls";
 import { VoiceConversationStream } from "./ConversationStream";
 import { VoiceBrandHeader } from "./BrandHeader";
@@ -26,14 +25,12 @@ export type VoicePhoneLayoutProps = {
   error?: string | null;
   hasTurns?: boolean;
   debugCopied?: boolean;
-  pipeline?: VoicePipeline;
   embedded?: boolean;
   onStart?: () => void | Promise<void>;
   onStartNew?: () => void | Promise<void>;
   onToggleMute?: () => void;
   onStop?: () => void;
   onCopyDebugLog?: () => void;
-  onPipelineChange?: (pipeline: VoicePipeline) => void;
 };
 
 export function VoicePhoneLayout({
@@ -48,14 +45,12 @@ export function VoicePhoneLayout({
   error,
   hasTurns = false,
   debugCopied,
-  pipeline = "classic",
   embedded = false,
   onStart,
   onStartNew,
   onToggleMute,
   onStop,
   onCopyDebugLog,
-  onPipelineChange,
 }: VoicePhoneLayoutProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(true);
@@ -91,10 +86,7 @@ export function VoicePhoneLayout({
           <VoiceSettingsPanel
             debugCopied={debugCopied}
             onCopyDebugLog={onCopyDebugLog}
-            onPipelineChange={onPipelineChange}
             overlay
-            pipeline={pipeline}
-            pipelineDisabled={isActive}
           />
         ) : null}
 
