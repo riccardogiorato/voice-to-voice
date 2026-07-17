@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import type { VoicePipeline } from "@/app/_lib/voice-pipeline";
 import {
   cleanTranscript,
   decodeFloat32,
@@ -21,6 +22,7 @@ import {
   wordChangeRatio,
 } from "./voice-utils";
 import { generateAssistantReply } from "./reply";
+import { generateInklingVoiceTurn } from "./inkling";
 import { repairTranscript } from "./transcript-repair";
 import type { UserContext } from "./user-context";
 import type { ToolActivity } from "./reply";
@@ -29,6 +31,8 @@ import type { ChatMessage, ClientEvent } from "./voice-utils";
 const TTS_DONE_AFTER_COMMIT_MS = 8_000;
 const TTS_DONE_AFTER_AUDIO_IDLE_MS = 4_000;
 const STT_COMMIT_AWAIT_TIMEOUT_MS = 2_000;
+const INKLING_COMMIT_GRACE_MS = 300;
+const INKLING_MAX_PCM_BYTES = 400_000;
 const MAX_CLOSE_REASON_LENGTH = 120;
 let nextSessionId = 1;
 
@@ -69,11 +73,15 @@ export class VoiceSession {
   private lastRawTranscript = "";
   private lastRepairedTranscript = "";
   private ttsDoneWatchdog?: NodeJS.Timeout;
+  private inklingPcmChunks: Uint8Array[] = [];
+  private inklingPcmBytes = 0;
+  private inklingCommitTimer?: NodeJS.Timeout;
   private readonly sessionId = nextSessionId++;
 
   constructor(
     private client: WebSocket,
     private userContext: UserContext = {},
+    private pipeline: VoicePipeline = "classic",
   ) {}
 
   start() {
@@ -109,7 +117,7 @@ export class VoiceSession {
       this.close("call time limit reached", 1000);
     }, 600_000);
 
-    this.connectStt();
+    if (this.pipeline === "classic") this.connectStt();
     this.connectTts();
     this.send("state", { state: "connecting" });
   }
@@ -270,6 +278,19 @@ export class VoiceSession {
     }
 
     if (event.type === "speech.started") {
+      if (this.pipeline === "inkling") {
+        const continuingPendingTurn = Boolean(this.inklingCommitTimer);
+        clearTimeout(this.inklingCommitTimer);
+        this.inklingCommitTimer = undefined;
+        if (!continuingPendingTurn) {
+          this.clearInklingAudio();
+          if (this.turnCount > 0) this.cancelAssistantOutput();
+        }
+        this.userSpeechActive = true;
+        this.send("state", { state: "listening" });
+        return;
+      }
+
       this.userSpeechActive = true;
       this.pausePendingAnswer();
       this.send("state", { state: "listening" });
@@ -296,6 +317,12 @@ export class VoiceSession {
     }
 
     if (event.type === "audio.commit") {
+      if (this.pipeline === "inkling") {
+        this.userSpeechActive = false;
+        this.scheduleInklingTurn();
+        return;
+      }
+
       this.userSpeechActive = false;
       clearTimeout(this.speechIdleTimer);
       this.pendingTranscriptCompletions += 1;
@@ -305,6 +332,11 @@ export class VoiceSession {
     }
 
     if (event.type === "audio.input") {
+      if (this.pipeline === "inkling") {
+        this.appendInklingAudio(event.audio, event.sampleRate, event.format);
+        return;
+      }
+
       if (this.userSpeechActive) this.refreshSpeechIdleTimer();
       this.forwardAudio(event.audio, event.sampleRate, event.format);
     }
@@ -391,6 +423,9 @@ export class VoiceSession {
       // Apply the latest profile before releasing any queued text.
       this.updateTtsSession();
       this.flushSpeech();
+      if (this.pipeline === "inkling" && this.turnCount === 0) {
+        this.send("state", { state: "listening" });
+      }
       return;
     }
 
@@ -505,6 +540,99 @@ export class VoiceSession {
   private commitAudio() {
     if (!this.stt || this.stt.readyState !== WebSocket.OPEN) return;
     this.stt.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+  }
+
+  private appendInklingAudio(
+    audio: string,
+    sampleRate: number,
+    format?: "float32le" | "pcm_s16le",
+  ) {
+    const encodedAudio =
+      format === "pcm_s16le" && sampleRate === 16_000
+        ? audio
+        : encodeFloat32AsPcm16(audio, sampleRate);
+    const bytes = new Uint8Array(Buffer.from(encodedAudio, "base64"));
+    if (bytes.byteLength === 0) return;
+    if (this.inklingPcmBytes + bytes.byteLength > INKLING_MAX_PCM_BYTES) {
+      this.send("error", {
+        message: "That voice message is too long. Try a shorter turn.",
+      });
+      this.clearInklingAudio();
+      return;
+    }
+    this.inklingPcmChunks.push(bytes);
+    this.inklingPcmBytes += bytes.byteLength;
+  }
+
+  private scheduleInklingTurn() {
+    clearTimeout(this.inklingCommitTimer);
+    this.inklingCommitTimer = setTimeout(() => {
+      this.inklingCommitTimer = undefined;
+      if (!this.stopped) void this.runInklingTurn();
+    }, INKLING_COMMIT_GRACE_MS);
+  }
+
+  private async runInklingTurn() {
+    if (this.inklingPcmBytes === 0) return;
+    const pcm16 = new Uint8Array(this.inklingPcmBytes);
+    let offset = 0;
+    for (const chunk of this.inklingPcmChunks) {
+      pcm16.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    this.clearInklingAudio();
+
+    this.cancelAssistantOutput();
+    this.send("state", { state: "thinking" });
+    this.turnCount += 1;
+    this.ttsContextId = `turn-${this.turnCount}`;
+    this.answerAudioStarted = false;
+    this.updateTtsSession();
+
+    const controller = new AbortController();
+    this.chatAbort = controller;
+    try {
+      const result = await generateInklingVoiceTurn({
+        apiKey: process.env.TOGETHER_API_KEY!,
+        history: this.history,
+        pcm16,
+        signal: controller.signal,
+        userContext: this.userContext,
+      });
+      if (controller.signal.aborted || this.stopped) return;
+
+      this.lastUserTranscript = result.transcript;
+      this.lastUserFinalAt = Date.now();
+      this.send("transcript.final", { text: result.transcript });
+      this.history.push({ role: "user", content: result.transcript });
+      this.trimHistory();
+
+      if (result.language) this.setTtsLanguage(result.language);
+      this.send("state", { state: "speaking" });
+      this.send("assistant.delta", { text: result.reply });
+      this.speak(result.reply);
+      this.commitSpeech();
+
+      this.history.push({ role: "assistant", content: result.reply });
+      this.trimHistory();
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        this.send("error", {
+          message:
+            error instanceof Error ? error.message : "Inkling voice turn failed.",
+        });
+        this.send("state", { state: "listening" });
+      }
+    } finally {
+      if (this.chatAbort === controller) this.chatAbort = undefined;
+    }
+  }
+
+  private clearInklingAudio() {
+    clearTimeout(this.inklingCommitTimer);
+    this.inklingCommitTimer = undefined;
+    this.inklingPcmChunks = [];
+    this.inklingPcmBytes = 0;
   }
 
   private async answer(transcript: string) {
@@ -773,6 +901,7 @@ export class VoiceSession {
   }
 
   private cancelResponse() {
+    this.clearInklingAudio();
     this.cancelPendingAnswer(false);
     this.pendingTranscriptCompletions = 0;
     clearTimeout(this.transcriptAwaitTimer);
@@ -923,6 +1052,7 @@ export class VoiceSession {
     clearTimeout(this.answerTimer);
     clearTimeout(this.speechIdleTimer);
     clearTimeout(this.transcriptAwaitTimer);
+    this.clearInklingAudio();
     this.clearTtsDoneWatchdog();
     this.repairAbort?.abort();
     this.chatAbort?.abort();
