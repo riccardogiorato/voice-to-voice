@@ -3,10 +3,15 @@ import {
   compactErrorBody,
   systemPrompt,
 } from "./voice-utils";
-import { AVAILABLE_TOOLS, LOCAL_CONTEXT_TOOLS, runToolCall } from "./tools";
+import {
+  AVAILABLE_TOOLS,
+  LOCAL_CONTEXT_TOOLS,
+  runToolCallWithActivity,
+} from "./tools";
 import type { ChatMessage } from "./voice-utils";
-import type { TogetherToolCall } from "./tools";
+import type { TogetherToolCall, ToolActivity } from "./tools";
 import type { UserContext } from "./user-context";
+import { buildVoiceToolPolicyPrompt } from "./tool-policy";
 
 type TogetherMessage =
   | { role: "system" | "user" | "assistant"; content: string }
@@ -25,14 +30,6 @@ type ChatStreamResult = {
   content: string;
   toolCalls: TogetherToolCall[];
   reasoningChars: number;
-};
-
-export type ToolActivity = {
-  id: string;
-  name: string;
-  status: "running" | "completed" | "failed";
-  input?: string;
-  summary?: string;
 };
 
 export type ReplyDebugEvent = {
@@ -115,31 +112,8 @@ export function buildSystemMessageContent(
   now = new Date(),
   userContext: UserContext = {},
 ) {
-  const spokenDate = new Intl.DateTimeFormat("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(now).replace(",", "");
-
   return `${systemPrompt}
-CURRENT DATE: ${spokenDate} (UTC).
-USER TIME ZONE: ${userContext.timeZone ?? "unknown"}.
-Time rules:
-- For the current time or date, call get_current_time. Do not use web search as a clock.
-- Omit tool arguments for the user's local time. For another place, pass its IANA time zone and two-letter country code.
-- Preserve the tool result's regional 12-hour or 24-hour clock convention in your answer.
-Location rules:
-- Call get_user_location only when the user's approximate location is relevant.
-- Phrase the result naturally, such as "It looks like you're in Italy."
-- Do not explain how the location was estimated or mention technical implementation details.
-Web search rules:
-- Search for current facts or explicit lookup, verification, and source requests.
-- Always search: news, live or recent sports, weather, prices, current officeholders, and ongoing events.
-- Do not search: casual or creative requests, stable knowledge, your identity or capabilities, or provided app facts.
-- If recency matters, search the current answer and include ${now.getUTCFullYear()} in the query. Never use an older year from memory.
-- Answer from tool results briefly without mentioning hidden reasoning.`;
+${buildVoiceToolPolicyPrompt(now, userContext)}`;
 }
 
 async function answerWithModel(
@@ -505,103 +479,6 @@ async function streamTogetherChat({
 function stripLeadingFinalMarker(delta: string, currentContent: string) {
   if (currentContent.length > 0) return delta;
   return delta.trim().toLowerCase() === "final" ? "" : delta;
-}
-
-async function runToolCallWithActivity(
-  toolCall: TogetherToolCall,
-  signal: AbortSignal,
-  onToolActivity: ((activity: ToolActivity) => void) | undefined,
-  userContext: UserContext,
-) {
-  const baseActivity = describeToolCall(toolCall, userContext);
-  onToolActivity?.({ ...baseActivity, status: "running" });
-
-  try {
-    const result = await runToolCall(toolCall, signal, userContext);
-    onToolActivity?.({
-      ...baseActivity,
-      status: "completed",
-      summary: summarizeToolResult(result),
-    });
-    return result;
-  } catch (error) {
-    onToolActivity?.({
-      ...baseActivity,
-      status: "failed",
-      summary: error instanceof Error ? error.message : "Tool call failed.",
-    });
-    throw error;
-  }
-}
-
-function describeToolCall(toolCall: TogetherToolCall, userContext: UserContext) {
-  const args = parseToolArguments(toolCall);
-  const name = toolCall.function.name;
-  return {
-    id: toolCall.id || `${name}-${Date.now()}`,
-    name,
-    input:
-      typeof args.query === "string"
-        ? args.query
-        : typeof args.time_zone === "string"
-          ? args.time_zone
-          : toolCall.function.name === "get_current_time"
-            ? userContext.timeZone ?? "UTC"
-            : toolCall.function.name === "get_user_location"
-              ? "Approximate location"
-              : undefined,
-  };
-}
-
-function parseToolArguments(toolCall: TogetherToolCall) {
-  try {
-    const parsed = JSON.parse(toolCall.function.arguments || "{}");
-    return parsed && typeof parsed === "object"
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-function summarizeToolResult(result: string) {
-  try {
-    const parsed = JSON.parse(result) as {
-      error?: unknown;
-      results?: Array<{ title?: unknown }>;
-      formatted?: unknown;
-      available?: unknown;
-      city?: unknown;
-      country?: unknown;
-      timeZone?: unknown;
-    };
-    if (typeof parsed.error === "string" && parsed.error.trim()) {
-      return parsed.error.trim();
-    }
-    if (Array.isArray(parsed.results)) {
-      const count = parsed.results.length;
-      const firstTitle = parsed.results.find(
-        (item) => typeof item.title === "string" && item.title.trim(),
-      )?.title;
-      const resultLabel = count === 1 ? "1 result" : `${count} results`;
-      return typeof firstTitle === "string" && firstTitle.trim()
-        ? `${resultLabel}: ${firstTitle.trim()}`
-        : resultLabel;
-    }
-    if (typeof parsed.formatted === "string" && parsed.formatted.trim()) {
-      return parsed.formatted.trim();
-    }
-    if (parsed.available === true) {
-      return [parsed.city, parsed.country, parsed.timeZone]
-        .filter(
-          (value): value is string =>
-            typeof value === "string" && Boolean(value),
-        )
-        .join(", ");
-    }
-  } catch {}
-
-  return "Tool completed.";
 }
 
 export function extractTextToolCall(content: string): TogetherToolCall | null {

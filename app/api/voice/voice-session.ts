@@ -25,7 +25,7 @@ import { generateAssistantReply } from "./reply";
 import { generateInklingVoiceTurn } from "./inkling";
 import { repairTranscript } from "./transcript-repair";
 import type { UserContext } from "./user-context";
-import type { ToolActivity } from "./reply";
+import type { ToolActivity } from "./tools";
 import type { ChatMessage, ClientEvent } from "./voice-utils";
 
 const TTS_DONE_AFTER_COMMIT_MS = 8_000;
@@ -597,6 +597,7 @@ export class VoiceSession {
         history: this.history,
         pcm16,
         signal: controller.signal,
+        onToolActivity: (activity) => this.sendToolActivity(activity),
         userContext: this.userContext,
       });
       if (controller.signal.aborted || this.stopped) return;

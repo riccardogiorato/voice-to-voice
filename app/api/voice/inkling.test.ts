@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import {
   buildInklingAudioRequest,
   buildInklingSystemPrompt,
@@ -10,6 +10,14 @@ import {
   readPcmWavMetadata,
   TOGETHER_INKLING_MODEL,
 } from "./inkling";
+import { setToolCallRunnerForTest } from "./tools";
+
+const originalExaKey = process.env.EXA_API_KEY;
+
+afterEach(() => {
+  process.env.EXA_API_KEY = originalExaKey;
+  setToolCallRunnerForTest(null);
+});
 
 test("builds the official OpenAI-compatible Inkling audio content shape", () => {
   const request = buildInklingAudioRequest({
@@ -76,6 +84,9 @@ test("describes Inkling as audio understanding while keeping TTS separate", () =
   expect(prompt).toContain("understand the user's latest speech directly");
   expect(prompt).toContain("separate text-to-speech model");
   expect(prompt).toContain("Europe/Rome");
+  expect(prompt).toContain("call get_current_time");
+  expect(prompt).toContain("Web search rules:\n-");
+  expect(prompt).toContain("include 2026 in the query");
 });
 
 test("wraps browser PCM16 in a WAV container with correct metadata", () => {
@@ -125,7 +136,7 @@ test("reads the text response from a non-streaming Inkling completion", async ()
     instruction: "Answer the audio.",
   });
 
-  const content = await createInklingAudioCompletion({
+  const completion = await createInklingAudioCompletion({
     apiKey: "test-key",
     request,
     fetchImpl: (async (_input, init) => {
@@ -137,7 +148,10 @@ test("reads the text response from a non-streaming Inkling completion", async ()
   });
 
   expect(sentBody).toEqual(request);
-  expect(content).toBe("The audio says hello.");
+  expect(completion).toEqual({
+    content: "The audio says hello.",
+    toolCalls: [],
+  });
 });
 
 test("runs one audio completion for both transcript and reply", async () => {
@@ -170,6 +184,95 @@ test("runs one audio completion for both transcript and reply", async () => {
   expect(sentBody.model).toBe(TOGETHER_INKLING_MODEL);
   expect(sentBody.reasoning_effort).toBe("low");
   expect(sentBody.messages.at(-1).content[1].type).toBe("input_audio");
+});
+
+test("runs Inkling tools and returns the final transcript and reply", async () => {
+  process.env.EXA_API_KEY = "test-exa-key";
+  const requests: any[] = [];
+  const activities: any[] = [];
+  const responses = [
+    {
+      choices: [
+        {
+          message: {
+            content: "",
+            tool_calls: [
+              {
+                id: "search-latest-models",
+                type: "function",
+                function: {
+                  name: "web_search",
+                  arguments: JSON.stringify({
+                    query: "Together AI latest model releases 2026",
+                  }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          message: {
+            content:
+              "<transcript>What are the latest Together AI models?</transcript>\n" +
+              "<lang:en>Inkling is now available on Together AI Serverless.",
+          },
+        },
+      ],
+    },
+  ];
+  setToolCallRunnerForTest(() =>
+    JSON.stringify({ results: [{ title: "Inkling is live" }] }),
+  );
+
+  const result = await generateInklingVoiceTurn({
+    apiKey: "test-key",
+    history: [],
+    pcm16: new Uint8Array([0, 0, 1, 0]),
+    signal: new AbortController().signal,
+    onToolActivity: (activity) => activities.push(activity),
+    fetchImpl: (async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return Response.json(responses[requests.length - 1]);
+    }) as typeof fetch,
+  });
+
+  expect(requests).toHaveLength(2);
+  expect(requests[0].tool_choice).toBe("auto");
+  expect(requests[0].tools.map((tool: any) => tool.function.name)).toEqual([
+    "get_current_time",
+    "get_user_location",
+    "web_search",
+  ]);
+  expect(requests[1].tools).toBeUndefined();
+  expect(requests[1].messages.at(-2)).toEqual({
+    role: "tool",
+    tool_call_id: "search-latest-models",
+    content: JSON.stringify({ results: [{ title: "Inkling is live" }] }),
+  });
+  expect(activities).toEqual([
+    {
+      id: "search-latest-models",
+      name: "web_search",
+      input: "Together AI latest model releases 2026",
+      status: "running",
+    },
+    {
+      id: "search-latest-models",
+      name: "web_search",
+      input: "Together AI latest model releases 2026",
+      status: "completed",
+      summary: "1 result: Inkling is live",
+    },
+  ]);
+  expect(result).toEqual({
+    transcript: "What are the latest Together AI models?",
+    language: "en",
+    reply: "Inkling is now available on Together AI Serverless.",
+  });
 });
 
 function mockFetch(payload: unknown) {

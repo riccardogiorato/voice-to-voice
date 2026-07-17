@@ -11,6 +11,14 @@ export type TogetherToolCall = {
   };
 };
 
+export type ToolActivity = {
+  id: string;
+  name: string;
+  status: "running" | "completed" | "failed";
+  input?: string;
+  summary?: string;
+};
+
 export const WEB_SEARCH_TOOL = {
   type: "function",
   function: {
@@ -103,6 +111,33 @@ export async function runToolCall(
   return JSON.stringify({ error: `Unknown tool: ${toolCall.function.name}` });
 }
 
+export async function runToolCallWithActivity(
+  toolCall: TogetherToolCall,
+  signal: AbortSignal,
+  onToolActivity: ((activity: ToolActivity) => void) | undefined,
+  userContext: UserContext,
+) {
+  const baseActivity = describeToolCall(toolCall, userContext);
+  onToolActivity?.({ ...baseActivity, status: "running" });
+
+  try {
+    const result = await runToolCall(toolCall, signal, userContext);
+    onToolActivity?.({
+      ...baseActivity,
+      status: "completed",
+      summary: summarizeToolResult(result),
+    });
+    return result;
+  } catch (error) {
+    onToolActivity?.({
+      ...baseActivity,
+      status: "failed",
+      summary: error instanceof Error ? error.message : "Tool call failed.",
+    });
+    throw error;
+  }
+}
+
 let toolCallRunnerForTest:
   | ((toolCall: TogetherToolCall, signal: AbortSignal) => Promise<string> | string)
   | null = null;
@@ -113,6 +148,76 @@ export function setToolCallRunnerForTest(
     | null,
 ) {
   toolCallRunnerForTest = runner;
+}
+
+function describeToolCall(toolCall: TogetherToolCall, userContext: UserContext) {
+  const args = parseToolArguments(toolCall);
+  const name = toolCall.function.name;
+  return {
+    id: toolCall.id || `${name}-${Date.now()}`,
+    name,
+    input:
+      typeof args.query === "string"
+        ? args.query
+        : typeof args.time_zone === "string"
+          ? args.time_zone
+          : toolCall.function.name === "get_current_time"
+            ? userContext.timeZone ?? "UTC"
+            : toolCall.function.name === "get_user_location"
+              ? "Approximate location"
+              : undefined,
+  };
+}
+
+function parseToolArguments(toolCall: TogetherToolCall) {
+  try {
+    const parsed = JSON.parse(toolCall.function.arguments || "{}");
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function summarizeToolResult(result: string) {
+  try {
+    const parsed = JSON.parse(result) as {
+      error?: unknown;
+      results?: Array<{ title?: unknown }>;
+      formatted?: unknown;
+      available?: unknown;
+      city?: unknown;
+      country?: unknown;
+      timeZone?: unknown;
+    };
+    if (typeof parsed.error === "string" && parsed.error.trim()) {
+      return parsed.error.trim();
+    }
+    if (Array.isArray(parsed.results)) {
+      const count = parsed.results.length;
+      const firstTitle = parsed.results.find(
+        (item) => typeof item.title === "string" && item.title.trim(),
+      )?.title;
+      const resultLabel = count === 1 ? "1 result" : `${count} results`;
+      return typeof firstTitle === "string" && firstTitle.trim()
+        ? `${resultLabel}: ${firstTitle.trim()}`
+        : resultLabel;
+    }
+    if (typeof parsed.formatted === "string" && parsed.formatted.trim()) {
+      return parsed.formatted.trim();
+    }
+    if (parsed.available === true) {
+      return [parsed.city, parsed.country, parsed.timeZone]
+        .filter(
+          (value): value is string =>
+            typeof value === "string" && Boolean(value),
+        )
+        .join(", ");
+    }
+  } catch {}
+
+  return "Tool completed.";
 }
 
 function runGetCurrentTime(

@@ -3,6 +3,13 @@ import {
   stripAssistantMarkdown,
   stripReplyLanguageControlTags,
 } from "./reply";
+import { buildVoiceToolPolicyPrompt } from "./tool-policy";
+import {
+  AVAILABLE_TOOLS,
+  LOCAL_CONTEXT_TOOLS,
+  runToolCallWithActivity,
+} from "./tools";
+import type { TogetherToolCall, ToolActivity } from "./tools";
 import type { UserContext } from "./user-context";
 import type { ChatMessage } from "./voice-utils";
 
@@ -10,6 +17,11 @@ export const TOGETHER_INKLING_MODEL = "thinkingmachines/inkling";
 export const TOGETHER_MODELS_URL = "https://api.together.ai/v1/models";
 export const TOGETHER_CHAT_COMPLETIONS_URL =
   "https://api.together.ai/v1/chat/completions";
+const INKLING_MAX_TOOL_ROUNDS = 1;
+const INKLING_FINAL_ANSWER_REMINDER =
+  "The next response is the final spoken answer. Output exactly " +
+  "<transcript>the exact spoken words</transcript>, then a newline, then " +
+  "<lang:xx> followed by the direct answer. Do not call another tool.";
 
 export type InklingAudioFormat = "flac" | "wav";
 
@@ -41,12 +53,37 @@ type InklingAudioMessage = {
   ];
 };
 
+type InklingAssistantToolMessage = {
+  role: "assistant";
+  content: string;
+  tool_calls: TogetherToolCall[];
+};
+
+type InklingToolMessage = {
+  role: "tool";
+  tool_call_id: string;
+  content: string;
+};
+
+type InklingMessage =
+  | InklingTextMessage
+  | InklingAudioMessage
+  | InklingAssistantToolMessage
+  | InklingToolMessage;
+
 export type InklingChatRequest = {
   model: string;
-  messages: Array<InklingTextMessage | InklingAudioMessage>;
+  messages: InklingMessage[];
   max_tokens: number;
   reasoning_effort: "low";
   stream: boolean;
+  tools?: ReadonlyArray<(typeof AVAILABLE_TOOLS)[number]>;
+  tool_choice?: "auto" | "none";
+};
+
+export type InklingChatCompletion = {
+  content: string;
+  toolCalls: TogetherToolCall[];
 };
 
 export type InklingVoiceTurn = {
@@ -76,6 +113,8 @@ export function buildInklingAudioRequest({
   model = TOGETHER_INKLING_MODEL,
   stream = false,
   system,
+  toolChoice,
+  tools,
 }: {
   audio: InklingAudioInput;
   history?: InklingTextMessage[];
@@ -84,6 +123,8 @@ export function buildInklingAudioRequest({
   model?: string;
   stream?: boolean;
   system?: string;
+  toolChoice?: InklingChatRequest["tool_choice"];
+  tools?: InklingChatRequest["tools"];
 }): InklingChatRequest {
   if (!audio.data) throw new Error("Inkling audio data is empty.");
   if (!Number.isInteger(audio.numFrames) || audio.numFrames <= 0) {
@@ -93,7 +134,7 @@ export function buildInklingAudioRequest({
     throw new Error("Inkling audio sampleRate must be a positive integer.");
   }
 
-  const messages: Array<InklingTextMessage | InklingAudioMessage> = [];
+  const messages: InklingMessage[] = [];
   if (system?.trim()) {
     messages.push({ role: "system", content: system.trim() });
   }
@@ -114,13 +155,20 @@ export function buildInklingAudioRequest({
     ],
   });
 
-  return {
+  const request: InklingChatRequest = {
     model,
     messages,
     max_tokens: maxTokens,
     reasoning_effort: "low",
     stream,
   };
+  if (tools?.length) {
+    request.tools = tools;
+    request.tool_choice = toolChoice ?? "auto";
+  } else if (toolChoice) {
+    request.tool_choice = toolChoice;
+  }
+  return request;
 }
 
 export async function generateInklingVoiceTurn({
@@ -129,6 +177,7 @@ export async function generateInklingVoiceTurn({
   history,
   pcm16,
   signal,
+  onToolActivity,
   userContext = {},
 }: {
   apiKey: string;
@@ -136,10 +185,11 @@ export async function generateInklingVoiceTurn({
   history: ChatMessage[];
   pcm16: Uint8Array;
   signal: AbortSignal;
+  onToolActivity?: (activity: ToolActivity) => void;
   userContext?: UserContext;
 }): Promise<InklingVoiceTurn> {
   const wav = pcm16ToWav(pcm16);
-  const request = buildInklingAudioRequest({
+  const baseRequest = buildInklingAudioRequest({
     audio: {
       data: Buffer.from(wav).toString("base64"),
       format: "wav",
@@ -155,13 +205,53 @@ export async function generateInklingVoiceTurn({
     maxTokens: 600,
     system: buildInklingSystemPrompt(new Date(), userContext),
   });
-  const content = await createInklingAudioCompletion({
-    apiKey,
-    fetchImpl,
-    request,
-    signal,
-  });
-  return parseInklingVoiceResponse(content);
+  const messages = [...baseRequest.messages];
+
+  for (let round = 0; round <= INKLING_MAX_TOOL_ROUNDS; round += 1) {
+    const allowTools = round < INKLING_MAX_TOOL_ROUNDS;
+    const availableTools = process.env.EXA_API_KEY
+      ? AVAILABLE_TOOLS
+      : LOCAL_CONTEXT_TOOLS;
+    const request: InklingChatRequest = {
+      ...baseRequest,
+      messages: [...messages],
+      ...(allowTools
+        ? { tools: availableTools, tool_choice: "auto" as const }
+        : {}),
+    };
+    const completion = await createInklingAudioCompletion({
+      apiKey,
+      fetchImpl,
+      request,
+      signal,
+    });
+
+    if (completion.toolCalls.length === 0) {
+      return parseInklingVoiceResponse(completion.content);
+    }
+
+    messages.push({
+      role: "assistant",
+      content: completion.content,
+      tool_calls: completion.toolCalls,
+    });
+    for (const toolCall of completion.toolCalls.slice(0, 2)) {
+      const toolResult = await runToolCallWithActivity(
+        toolCall,
+        signal,
+        onToolActivity,
+        userContext,
+      );
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: toolResult,
+      });
+    }
+    messages.push({ role: "system", content: INKLING_FINAL_ANSWER_REMINDER });
+  }
+
+  throw new Error("Together Inkling did not produce a final answer after tool use.");
 }
 
 export function parseInklingVoiceResponse(content: string): InklingVoiceTurn {
@@ -194,24 +284,14 @@ export function buildInklingSystemPrompt(
   now = new Date(),
   userContext: UserContext = {},
 ) {
-  const date = new Intl.DateTimeFormat("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  })
-    .format(now)
-    .replace(",", "");
-
   return (
     "You are Together Voice, a warm, concise voice assistant demo built by " +
     "Together AI. You understand the user's latest speech directly with the " +
     "Thinking Machines Inkling model, and the app sends your text reply to a " +
     "separate text-to-speech model. Reply naturally in one or two short spoken " +
     "sentences in the same language as the latest speech. Use plain spoken text " +
-    "without markdown or formatting symbols. " +
-    `The current date is ${date} UTC. The user's time zone is ${userContext.timeZone ?? "unknown"}.`
+    "without markdown or formatting symbols.\n" +
+    buildVoiceToolPolicyPrompt(now, userContext)
   );
 }
 
@@ -286,11 +366,24 @@ export async function createInklingAudioCompletion({
   }
 
   const payload = await response.json();
-  const content = payload?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) {
-    throw new Error("Together Inkling returned no text content.");
+  const message = payload?.choices?.[0]?.message;
+  const content = typeof message?.content === "string" ? message.content.trim() : "";
+  const toolCalls = Array.isArray(message?.tool_calls)
+    ? message.tool_calls.filter(isTogetherToolCall)
+    : [];
+  if (!content && toolCalls.length === 0) {
+    throw new Error("Together Inkling returned no text or tool calls.");
   }
-  return content.trim();
+  return { content, toolCalls } satisfies InklingChatCompletion;
+}
+
+function isTogetherToolCall(value: unknown): value is TogetherToolCall {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== "string" || record.type !== "function") return false;
+  if (!record.function || typeof record.function !== "object") return false;
+  const fn = record.function as Record<string, unknown>;
+  return typeof fn.name === "string" && typeof fn.arguments === "string";
 }
 
 export function pcm16ToWav(
