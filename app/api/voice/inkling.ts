@@ -74,6 +74,7 @@ export type InklingChatRequest = {
   max_tokens: number;
   reasoning_effort: "low";
   stream: boolean;
+  temperature?: number;
   tools?: ReadonlyArray<(typeof AVAILABLE_TOOLS)[number]>;
   tool_choice?: "auto" | "none";
 };
@@ -110,6 +111,7 @@ export function buildInklingAudioRequest({
   model = TOGETHER_INKLING_MODEL,
   stream = false,
   system,
+  temperature,
   toolChoice,
   tools,
 }: {
@@ -120,6 +122,7 @@ export function buildInklingAudioRequest({
   model?: string;
   stream?: boolean;
   system?: string;
+  temperature?: number;
   toolChoice?: InklingChatRequest["tool_choice"];
   tools?: InklingChatRequest["tools"];
 }): InklingChatRequest {
@@ -165,6 +168,7 @@ export function buildInklingAudioRequest({
   } else if (toolChoice) {
     request.tool_choice = toolChoice;
   }
+  if (typeof temperature === "number") request.temperature = temperature;
   return request;
 }
 

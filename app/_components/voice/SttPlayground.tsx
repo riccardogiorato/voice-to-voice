@@ -14,8 +14,12 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   concatFloat32,
   createInteractiveAudioContext,
+  createVoiceCaptureConstraints,
+  formatVoiceCaptureInfo,
+  getVoiceCaptureInfo,
   pcm16Base64FromFloat32,
   pcm16WavBlobFromBase64,
+  type VoiceCaptureInfo,
 } from "@/app/_lib/client-audio";
 import {
   STT_PLAYGROUND_FALLBACK_MODELS,
@@ -36,6 +40,8 @@ type Recorder = {
   nodes: AudioNode[];
   stream: MediaStream;
   samples: Float32Array[];
+  rawSamples: Float32Array[];
+  captureInfo: VoiceCaptureInfo;
 };
 
 type Status = "idle" | "preparing" | "recording" | "analyzing" | "error";
@@ -57,6 +63,8 @@ export function SttPlayground() {
   const [activeModels, setActiveModels] = useState<SttComparisonModel[] | null>(null);
   const [modelStates, setModelStates] = useState<Record<string, ModelState>>({});
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
+  const [rawPlaybackUrl, setRawPlaybackUrl] = useState<string | null>(null);
+  const [captureInfo, setCaptureInfo] = useState<VoiceCaptureInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const recorderRef = useRef<Recorder | null>(null);
   const holdRef = useRef(false);
@@ -64,6 +72,7 @@ export function SttPlayground() {
   const animationFrameRef = useRef<number | null>(null);
   const maxDurationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playbackUrlRef = useRef<string | null>(null);
+  const rawPlaybackUrlRef = useRef<string | null>(null);
 
   const clearRecording = () => {
     if (animationFrameRef.current !== null) {
@@ -89,6 +98,7 @@ export function SttPlayground() {
     return () => {
       clearRecording();
       if (playbackUrlRef.current) URL.revokeObjectURL(playbackUrlRef.current);
+      if (rawPlaybackUrlRef.current) URL.revokeObjectURL(rawPlaybackUrlRef.current);
     };
   }, []);
 
@@ -131,16 +141,11 @@ export function SttPlayground() {
     let pendingAudioContext: AudioContext | null = null;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          autoGainControl: true,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: { ideal: STT_PLAYGROUND_SAMPLE_RATE },
-          sampleSize: { ideal: 16 },
-        },
+        audio: createVoiceCaptureConstraints(
+          navigator.mediaDevices.getSupportedConstraints(),
+        ),
       });
-      const audioContext = createInteractiveAudioContext(STT_PLAYGROUND_SAMPLE_RATE);
+      const audioContext = createInteractiveAudioContext();
       pendingStream = stream;
       pendingAudioContext = audioContext;
       await audioContext.resume();
@@ -148,19 +153,46 @@ export function SttPlayground() {
       const silentGain = audioContext.createGain();
       silentGain.gain.value = 0;
       const samples: Float32Array[] = [];
-      const nodes: AudioNode[] = [source, silentGain];
+      const rawSamples: Float32Array[] = [];
+      const highpass = audioContext.createBiquadFilter();
+      highpass.type = "highpass";
+      highpass.frequency.value = 70;
+      highpass.Q.value = 0.707;
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -20;
+      compressor.knee.value = 18;
+      compressor.ratio.value = 2.5;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.15;
+      const nodes: AudioNode[] = [source, highpass, compressor, silentGain];
       // Capture immediately after the stream is available. Awaiting a worklet module here
       // was making the first words after a press unreachable by the recorder.
+      const rawProcessor = audioContext.createScriptProcessor(1024, 1, 1);
+      rawProcessor.onaudioprocess = (event) => {
+        rawSamples.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+      };
       const processor = audioContext.createScriptProcessor(1024, 1, 1);
       processor.onaudioprocess = (event) => {
         samples.push(new Float32Array(event.inputBuffer.getChannelData(0)));
       };
-      source.connect(processor);
+      source.connect(rawProcessor);
+      rawProcessor.connect(silentGain);
+      source.connect(highpass);
+      highpass.connect(compressor);
+      compressor.connect(processor);
       processor.connect(silentGain);
-      nodes.push(processor);
+      nodes.push(rawProcessor, processor);
       silentGain.connect(audioContext.destination);
 
-      recorderRef.current = { audioContext, nodes, stream, samples };
+      const track = stream.getAudioTracks()[0];
+      recorderRef.current = {
+        audioContext,
+        nodes,
+        stream,
+        samples,
+        rawSamples,
+        captureInfo: getVoiceCaptureInfo(track?.getSettings() ?? {}, audioContext.sampleRate),
+      };
       pendingStream = null;
       pendingAudioContext = null;
       if (!holdRef.current) {
@@ -214,6 +246,22 @@ export function SttPlayground() {
     );
     playbackUrlRef.current = nextPlaybackUrl;
     setPlaybackUrl(nextPlaybackUrl);
+    const rawSampleCount = recorder.rawSamples.reduce(
+      (total, samples) => total + samples.length,
+      0,
+    );
+    const rawAudio = pcm16Base64FromFloat32(
+      concatFloat32(recorder.rawSamples, rawSampleCount),
+      recorder.audioContext.sampleRate,
+      recorder.audioContext.sampleRate,
+    );
+    if (rawPlaybackUrlRef.current) URL.revokeObjectURL(rawPlaybackUrlRef.current);
+    const nextRawPlaybackUrl = URL.createObjectURL(
+      pcm16WavBlobFromBase64(rawAudio, recorder.audioContext.sampleRate),
+    );
+    rawPlaybackUrlRef.current = nextRawPlaybackUrl;
+    setRawPlaybackUrl(nextRawPlaybackUrl);
+    setCaptureInfo(recorder.captureInfo);
 
     const requestedModels = [...models];
     setActiveModels(requestedModels);
@@ -381,18 +429,29 @@ export function SttPlayground() {
                 </button>
               </div>
             ) : null}
-            {playbackUrl ? (
+            {playbackUrl && rawPlaybackUrl ? (
               <div className="mt-4 rounded-[18px] bg-[#f5f3fc] p-3">
                 <div className="flex items-center gap-2 text-sm font-semibold text-[#151320]">
                   <Volume2 className="size-4 text-[#8e35d5]" aria-hidden />
-                  Listen to the exact clip sent to the models
+                  Compare your microphone with the model clip
                 </div>
                 <p className="mt-1 text-xs leading-5 text-[#151320]/52">
-                  16 kHz mono PCM, wrapped as WAV only so your browser can play it.
+                  {captureInfo ? formatVoiceCaptureInfo(captureInfo) : "Checking microphone settings…"}
+                </p>
+                <p className="mt-3 text-xs font-semibold text-[#151320]/70">Raw microphone capture</p>
+                <audio
+                  aria-label="Raw microphone capture"
+                  className="mt-3 h-10 w-full"
+                  controls
+                  preload="metadata"
+                  src={rawPlaybackUrl}
+                />
+                <p className="mt-3 text-xs font-semibold text-[#151320]/70">
+                  Voice-optimized 16 kHz clip sent to the models
                 </p>
                 <audio
                   aria-label="Recorded audio sent to transcription models"
-                  className="mt-3 h-10 w-full"
+                  className="mt-2 h-10 w-full"
                   controls
                   preload="metadata"
                   src={playbackUrl}
