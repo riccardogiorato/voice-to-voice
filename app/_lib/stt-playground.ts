@@ -11,6 +11,30 @@ export type SttComparisonResult = SttComparisonModel & {
   transcript: string;
 };
 
+export const STT_LANGUAGE_OPTIONS = [
+  { code: "auto", label: "Browser language" },
+  { code: "en", label: "English" },
+  { code: "it", label: "Italiano" },
+  { code: "es", label: "Español" },
+  { code: "fr", label: "Français" },
+  { code: "de", label: "Deutsch" },
+  { code: "pt", label: "Português" },
+  { code: "nl", label: "Nederlands" },
+  { code: "pl", label: "Polski" },
+  { code: "ja", label: "日本語" },
+  { code: "zh", label: "中文" },
+] as const;
+
+export type SttLanguageCode = (typeof STT_LANGUAGE_OPTIONS)[number]["code"];
+
+export function isSttLanguageCode(value: unknown): value is SttLanguageCode {
+  return STT_LANGUAGE_OPTIONS.some((language) => language.code === value);
+}
+
+export function getSttLanguageLabel(code: SttLanguageCode) {
+  return STT_LANGUAGE_OPTIONS.find((language) => language.code === code)?.label ?? code;
+}
+
 export const STT_PLAYGROUND_FALLBACK_MODELS: SttComparisonModel[] = [
   {
     id: "nvidia/parakeet-tdt-0.6b-v3",

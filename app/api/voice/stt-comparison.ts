@@ -10,8 +10,10 @@ import {
   STT_PLAYGROUND_FALLBACK_MODELS,
   STT_PLAYGROUND_MAX_SECONDS,
   STT_PLAYGROUND_SAMPLE_RATE,
+  getSttLanguageLabel,
   type SttComparisonModel,
   type SttComparisonResult,
+  type SttLanguageCode,
 } from "@/app/_lib/stt-playground";
 
 export { STT_PLAYGROUND_MAX_SECONDS, STT_PLAYGROUND_SAMPLE_RATE };
@@ -100,6 +102,7 @@ export async function transcribeSttComparisonModel(
     transcribeBatch?: typeof transcribeBatchModel;
     transcribeRealtime?: typeof transcribeRealtimeModel;
   } = {},
+  language: SttLanguageCode = "auto",
 ): Promise<SttComparisonResult> {
   const now = dependencies.now ?? performance.now.bind(performance);
   const startedAt = now();
@@ -110,9 +113,9 @@ export async function transcribeSttComparisonModel(
   try {
     const transcript =
       entry.kind === "audio-chat"
-        ? await audioChat(pcm16, entry.model, apiKey)
+        ? await audioChat(pcm16, entry.model, apiKey, language)
         : entry.kind === "batch"
-          ? await batch(pcm16, entry.model, apiKey)
+          ? await batch(pcm16, entry.model, apiKey, language)
         : await realtime(pcm16, entry.model, apiKey);
     const cleanedTranscript = cleanTranscript(transcript);
     if (!cleanedTranscript) {
@@ -231,11 +234,12 @@ export async function transcribeBatchModel(
   pcm16: Uint8Array,
   model: string,
   apiKey: string,
+  language: SttLanguageCode = "auto",
 ) {
   const wav = pcm16ToWav(pcm16, STT_PLAYGROUND_SAMPLE_RATE);
   const body = new FormData();
   body.set("model", model);
-  body.set("language", "auto");
+  if (language !== "auto") body.set("language", language);
   body.set("file", new Blob([wav], { type: "audio/wav" }), "recording.wav");
 
   const response = await fetch("https://api.together.ai/v1/audio/transcriptions", {
@@ -257,6 +261,7 @@ export async function transcribeAudioChatModel(
   pcm16: Uint8Array,
   model: string,
   apiKey: string,
+  language: SttLanguageCode = "auto",
 ) {
   const wav = pcm16ToWav(pcm16, STT_PLAYGROUND_SAMPLE_RATE);
   const request = buildInklingAudioRequest({
@@ -267,8 +272,11 @@ export async function transcribeAudioChatModel(
       sampleRate: STT_PLAYGROUND_SAMPLE_RATE,
     },
     instruction:
-      "Transcribe the spoken audio exactly in its original language. Never translate, " +
-      "paraphrase, normalize, or answer it. Return only " +
+      (language === "auto"
+        ? "Transcribe the spoken audio exactly in its original language."
+        : `The spoken language is ${getSttLanguageLabel(language)} (${language}). ` +
+          `Write every transcribed word in ${getSttLanguageLabel(language)}.`) +
+      " Never translate, paraphrase, normalize, or answer it. Return only " +
       "<transcript>the exact spoken words in the same language</transcript> and no other text.",
     maxTokens: 300,
     model,

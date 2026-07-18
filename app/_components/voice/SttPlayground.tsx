@@ -23,10 +23,12 @@ import {
 } from "@/app/_lib/client-audio";
 import {
   STT_PLAYGROUND_FALLBACK_MODELS,
+  STT_LANGUAGE_OPTIONS,
   STT_PLAYGROUND_MAX_SECONDS,
   STT_PLAYGROUND_SAMPLE_RATE,
   type SttComparisonModel,
   type SttComparisonResult,
+  type SttLanguageCode,
 } from "@/app/_lib/stt-playground";
 import { cx } from "./utils";
 
@@ -65,6 +67,7 @@ export function SttPlayground() {
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [rawPlaybackUrl, setRawPlaybackUrl] = useState<string | null>(null);
   const [captureInfo, setCaptureInfo] = useState<VoiceCaptureInfo | null>(null);
+  const [language, setLanguage] = useState<SttLanguageCode>("auto");
   const [error, setError] = useState<string | null>(null);
   const recorderRef = useRef<Recorder | null>(null);
   const holdRef = useRef(false);
@@ -114,6 +117,13 @@ export function SttPlayground() {
       .catch(() => {
         // The built-in catalog remains usable if a transient catalog request fails.
       });
+  }, []);
+
+  useEffect(() => {
+    const browserLanguage = navigator.language.toLowerCase().split("-")[0];
+    if (STT_LANGUAGE_OPTIONS.some((option) => option.code === browserLanguage)) {
+      setLanguage(browserLanguage as SttLanguageCode);
+    }
   }, []);
 
   const refreshDuration = () => {
@@ -280,6 +290,7 @@ export function SttPlayground() {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               audio,
+              language,
               model: model.id,
               sampleRate: STT_PLAYGROUND_SAMPLE_RATE,
             }),
@@ -354,6 +365,23 @@ export function SttPlayground() {
                 {isRecording ? formatSeconds(durationMs) : "ready"}
               </span>
             </div>
+
+            <label className="mt-5 flex items-center justify-between gap-4 text-sm text-[#151320]/62">
+              <span>Recording language</span>
+              <select
+                aria-label="Recording language"
+                className="rounded-full border border-[#151320]/10 bg-[#f8f7ff] px-3 py-2 text-sm font-medium text-[#151320] outline-none transition focus:border-[#8e35d5]"
+                disabled={isBusy || isRecording}
+                onChange={(event) => setLanguage(event.target.value as SttLanguageCode)}
+                value={language}
+              >
+                {STT_LANGUAGE_OPTIONS.map((option) => (
+                  <option key={option.code} value={option.code}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
 
             <button
               aria-label="Hold to record audio for transcription comparison"
