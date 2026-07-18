@@ -48,10 +48,9 @@ test("transcribes one requested model without waiting for a slow sibling", async
     "test-key",
     {
       now: () => 10,
-      transcribeBatch: async (received, model, _apiKey, language) => {
+      transcribeBatch: async (received, model) => {
         expect(received).toBe(audio);
         expect(model).toBe("openai/whisper-large-v3");
-        expect(language).toBe("it");
         return "Hello from Whisper";
       },
       transcribeAudioChat: async () => {
@@ -61,7 +60,6 @@ test("transcribes one requested model without waiting for a slow sibling", async
         throw new Error("Realtime transcription must not be called for Whisper.");
       },
     },
-    "it",
   );
 
   expect(result).toMatchObject({

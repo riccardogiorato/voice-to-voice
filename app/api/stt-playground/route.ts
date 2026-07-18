@@ -4,10 +4,7 @@ import {
   getSttComparisonModels,
   transcribeSttComparisonModel,
 } from "@/app/api/voice/stt-comparison";
-import {
-  isSttLanguageCode,
-  STT_PLAYGROUND_SAMPLE_RATE,
-} from "@/app/_lib/stt-playground";
+import { STT_PLAYGROUND_SAMPLE_RATE } from "@/app/_lib/stt-playground";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -47,7 +44,6 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
       audio?: unknown;
-      language?: unknown;
       model?: unknown;
       sampleRate?: unknown;
     };
@@ -61,21 +57,12 @@ export async function POST(request: Request) {
     if (typeof body.model !== "string" || !body.model) {
       return Response.json({ error: "A comparison model is required." }, { status: 400 });
     }
-    if (body.language !== undefined && !isSttLanguageCode(body.language)) {
-      return Response.json({ error: "Unknown recording language." }, { status: 400 });
-    }
     const models = await getSttComparisonModels({ apiKey });
     const model = models.find((entry) => entry.id === body.model);
     if (!model) {
       return Response.json({ error: "Unknown transcription model." }, { status: 400 });
     }
-    const result = await transcribeSttComparisonModel(
-      pcm16,
-      model,
-      apiKey,
-      {},
-      body.language ?? "auto",
-    );
+    const result = await transcribeSttComparisonModel(pcm16, model, apiKey);
     return Response.json({ result });
   } catch (error) {
     return Response.json(
