@@ -30,6 +30,9 @@ test("lists every public serverless STT model and keeps Inkling visible", async 
     kind: "audio-chat",
     model: "thinkingmachines/inkling",
   });
+  expect(models.find((model) => model.id === "openai/whisper-large-v3")).toMatchObject({
+    kind: "batch",
+  });
 });
 
 test("transcribes one requested model without waiting for a slow sibling", async () => {
@@ -38,20 +41,23 @@ test("transcribes one requested model without waiting for a slow sibling", async
     audio,
     {
       id: "openai/whisper-large-v3",
-      kind: "realtime",
+      kind: "batch",
       label: "Whisper Large v3",
       model: "openai/whisper-large-v3",
     },
     "test-key",
     {
       now: () => 10,
-      transcribeRealtime: async (received, model) => {
+      transcribeBatch: async (received, model) => {
         expect(received).toBe(audio);
         expect(model).toBe("openai/whisper-large-v3");
         return "Hello from Whisper";
       },
       transcribeAudioChat: async () => {
         throw new Error("Audio chat must not be called for the Whisper request.");
+      },
+      transcribeRealtime: async () => {
+        throw new Error("Realtime transcription must not be called for Whisper.");
       },
     },
   );

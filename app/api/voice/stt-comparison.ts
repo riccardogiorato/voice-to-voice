@@ -45,7 +45,7 @@ function toComparisonModel(model: TogetherCatalogModel): SttComparisonModel | nu
 
   return {
     id,
-    kind: "realtime",
+    kind: id === "openai/whisper-large-v3" ? "batch" : "realtime",
     label:
       typeof model.display_name === "string" && model.display_name
         ? model.display_name
@@ -97,6 +97,7 @@ export async function transcribeSttComparisonModel(
   dependencies: {
     now?: () => number;
     transcribeAudioChat?: typeof transcribeAudioChatModel;
+    transcribeBatch?: typeof transcribeBatchModel;
     transcribeRealtime?: typeof transcribeRealtimeModel;
   } = {},
 ): Promise<SttComparisonResult> {
@@ -104,11 +105,14 @@ export async function transcribeSttComparisonModel(
   const startedAt = now();
   const realtime = dependencies.transcribeRealtime ?? transcribeRealtimeModel;
   const audioChat = dependencies.transcribeAudioChat ?? transcribeAudioChatModel;
+  const batch = dependencies.transcribeBatch ?? transcribeBatchModel;
 
   try {
     const transcript =
       entry.kind === "audio-chat"
         ? await audioChat(pcm16, entry.model, apiKey)
+        : entry.kind === "batch"
+          ? await batch(pcm16, entry.model, apiKey)
         : await realtime(pcm16, entry.model, apiKey);
     const cleanedTranscript = cleanTranscript(transcript);
     if (!cleanedTranscript) {
@@ -223,6 +227,32 @@ export function transcribeRealtimeModel(
   });
 }
 
+export async function transcribeBatchModel(
+  pcm16: Uint8Array,
+  model: string,
+  apiKey: string,
+) {
+  const wav = pcm16ToWav(pcm16, STT_PLAYGROUND_SAMPLE_RATE);
+  const body = new FormData();
+  body.set("model", model);
+  body.set("language", "auto");
+  body.set("file", new Blob([wav], { type: "audio/wav" }), "recording.wav");
+
+  const response = await fetch("https://api.together.ai/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body,
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `${model} failed (${response.status})${detail ? `: ${detail.slice(0, 240)}` : ""}`,
+    );
+  }
+  const payload = (await response.json()) as { text?: unknown };
+  return typeof payload.text === "string" ? payload.text : "";
+}
+
 export async function transcribeAudioChatModel(
   pcm16: Uint8Array,
   model: string,
@@ -237,13 +267,16 @@ export async function transcribeAudioChatModel(
       sampleRate: STT_PLAYGROUND_SAMPLE_RATE,
     },
     instruction:
-      "Transcribe the spoken audio exactly. Return only " +
-      "<transcript>the exact spoken words</transcript> and no other text.",
+      "Transcribe the spoken audio exactly in its original language. Never translate, " +
+      "paraphrase, normalize, or answer it. Return only " +
+      "<transcript>the exact spoken words in the same language</transcript> and no other text.",
     maxTokens: 300,
     model,
     system:
-      "You are a multilingual speech transcription engine. Preserve the " +
-      "speaker's language, names, wording, and hesitations. Never answer the speech.",
+      "You are a multilingual speech transcription engine, not a translator. Preserve " +
+      "the speaker's language exactly, along with names, wording, and hesitations. " +
+      "Never answer, translate, or change the language of the speech.",
+    temperature: 0,
   });
   const completion = await createInklingAudioCompletion({ apiKey, request });
   const match = completion.content.match(/<transcript>\s*([\s\S]*?)\s*<\/transcript>/i);

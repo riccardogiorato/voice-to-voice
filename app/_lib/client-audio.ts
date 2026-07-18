@@ -43,6 +43,60 @@ type WindowWithAudioContext = Window & {
   webkitAudioContext?: typeof AudioContext;
 };
 
+export type VoiceCaptureInfo = {
+  autoGainControl: boolean | null;
+  channelCount: number | null;
+  contextSampleRate: number;
+  echoCancellation: boolean | null;
+  noiseSuppression: boolean | null;
+  trackSampleRate: number | null;
+};
+
+export function createVoiceCaptureConstraints(
+  supported: MediaTrackSupportedConstraints,
+): MediaTrackConstraints {
+  const constraints: MediaTrackConstraints = {
+    channelCount: { ideal: 1 },
+    sampleRate: { ideal: 48_000 },
+    sampleSize: { ideal: 16 },
+  };
+
+  // The page never plays sound while recording, so echo cancellation only
+  // distorts the speaker's voice. Let the browser's native noise suppression
+  // stay enabled, then apply gentle gain control in the Web Audio graph.
+  if (supported.echoCancellation) constraints.echoCancellation = { ideal: false };
+  if (supported.noiseSuppression) constraints.noiseSuppression = { ideal: true };
+  if (supported.autoGainControl) constraints.autoGainControl = { ideal: false };
+  return constraints;
+}
+
+export function getVoiceCaptureInfo(
+  settings: MediaTrackSettings,
+  contextSampleRate: number,
+): VoiceCaptureInfo {
+  return {
+    autoGainControl: typeof settings.autoGainControl === "boolean" ? settings.autoGainControl : null,
+    channelCount: typeof settings.channelCount === "number" ? settings.channelCount : null,
+    contextSampleRate,
+    echoCancellation:
+      typeof settings.echoCancellation === "boolean" ? settings.echoCancellation : null,
+    noiseSuppression:
+      typeof settings.noiseSuppression === "boolean" ? settings.noiseSuppression : null,
+    trackSampleRate: typeof settings.sampleRate === "number" ? settings.sampleRate : null,
+  };
+}
+
+export function formatVoiceCaptureInfo(info: VoiceCaptureInfo) {
+  const sampleRate = Math.round((info.trackSampleRate ?? info.contextSampleRate) / 1_000);
+  const channels = info.channelCount === 1 ? "mono" : info.channelCount ? `${info.channelCount} channels` : "channel count unknown";
+  const processing = [
+    info.noiseSuppression === true ? "noise reduction on" : "noise reduction unavailable",
+    info.echoCancellation === false ? "echo cancellation off" : "echo cancellation on",
+    info.autoGainControl === false ? "native auto-gain off" : "native auto-gain on",
+  ];
+  return `${sampleRate} kHz ${channels} · ${processing.join(" · ")}`;
+}
+
 export function getVoiceSocketUrl(pipeline: VoicePipeline = "inkling") {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const url = new URL(`${protocol}//${window.location.host}/api/voice`);

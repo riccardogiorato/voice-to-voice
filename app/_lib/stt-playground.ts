@@ -1,6 +1,6 @@
 export type SttComparisonModel = {
   id: string;
-  kind: "audio-chat" | "realtime";
+  kind: "audio-chat" | "batch" | "realtime";
   label: string;
   model: string;
 };
@@ -20,7 +20,7 @@ export const STT_PLAYGROUND_FALLBACK_MODELS: SttComparisonModel[] = [
   },
   {
     id: "openai/whisper-large-v3",
-    kind: "realtime",
+    kind: "batch",
     label: "Whisper Large v3",
     model: "openai/whisper-large-v3",
   },
