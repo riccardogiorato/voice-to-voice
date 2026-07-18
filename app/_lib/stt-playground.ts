@@ -12,7 +12,7 @@ export type SttComparisonResult = SttComparisonModel & {
 };
 
 export const STT_LANGUAGE_OPTIONS = [
-  { code: "auto", label: "Browser language" },
+  { code: "auto", label: "Auto-detect" },
   { code: "en", label: "English" },
   { code: "it", label: "Italiano" },
   { code: "es", label: "Español" },

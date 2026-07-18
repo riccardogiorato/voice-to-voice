@@ -17,6 +17,8 @@ test("renders the push-to-talk comparison for every shipped serverless model", (
   expect(markup).toContain("Nemotron 3 ASR Streaming 0.6B");
   expect(markup).toContain("Nemotron 3.5 ASR Streaming 0.6B");
   expect(markup).toContain("Inkling FP4");
+  expect(markup).toContain("Spoken language");
+  expect(markup).toContain("Auto-detect");
   expect(markup).toContain("no VAD, reply model, or TTS involved");
 });
 
